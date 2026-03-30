@@ -1,5 +1,6 @@
 use std::{
     env, fs, io,
+    net::IpAddr,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
@@ -304,7 +305,7 @@ pub async fn update_vlm_state(
     vlm_state.clone()
 }
 
-fn parse_host_and_port(input: &str) -> Result<(String, u16), VlmError> {
+pub fn parse_host_and_port(input: &str) -> Result<(String, u16), VlmError> {
     let normalized = if input.contains("://") {
         input.to_string()
     } else {
@@ -319,7 +320,21 @@ fn parse_host_and_port(input: &str) -> Result<(String, u16), VlmError> {
         .port_or_known_default()
         .ok_or_else(|| VlmError::InvalidHost(input.to_string()))?;
 
+    if !is_loopback_host(host) {
+        return Err(VlmError::InvalidHost(format!(
+            "{input} (only localhost or loopback addresses are allowed)"
+        )));
+    }
+
     Ok((host.to_string(), port))
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
 }
 
 fn resolve_binary_path(app_paths: &AppPaths) -> Option<PathBuf> {
@@ -333,6 +348,11 @@ fn resolve_binary_path(app_paths: &AppPaths) -> Option<PathBuf> {
         app_paths.data_dir.join("binaries"),
         app_paths.data_dir.clone(),
     ];
+
+    if let Some(resource_dir) = &app_paths.resource_dir {
+        search_roots.push(resource_dir.join("binaries"));
+        search_roots.push(resource_dir.clone());
+    }
 
     if let Ok(current_exe) = env::current_exe() {
         if let Some(parent) = current_exe.parent() {
@@ -486,6 +506,16 @@ mod tests {
     }
 
     #[test]
+    fn parse_host_and_port_rejects_non_localhost_target() {
+        let error =
+            parse_host_and_port("https://api.openai.com").expect_err("remote host should fail");
+        assert!(
+            matches!(error, VlmError::InvalidHost(message) if message.contains("localhost")),
+            "remote host should explain the localhost requirement"
+        );
+    }
+
+    #[test]
     fn find_binary_in_dir_matches_sidecar_prefix() {
         let dir = test_dir("binary-discovery");
         fs::create_dir_all(&dir).expect("test directory should be created");
@@ -514,6 +544,26 @@ mod tests {
         let discovered = resolve_model_paths(&app_paths).expect("model paths should resolve");
         assert_eq!(discovered.0, model_path);
         assert_eq!(discovered.1, mmproj_path);
+
+        fs::remove_dir_all(&dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn from_config_detects_sidecar_binary_in_resource_dir() {
+        let dir = test_dir("resource-sidecar");
+        let resource_dir = dir.join("resources");
+        let binary_dir = resource_dir.join("binaries");
+        fs::create_dir_all(&binary_dir).expect("resource binary directory should exist");
+
+        let binary_path = binary_dir.join("llama-server-x86_64-pc-windows-msvc.exe");
+        fs::write(&binary_path, b"binary").expect("sidecar fixture should be written");
+
+        let config = AppConfig::with_data_dir(dir.to_string_lossy().into_owned());
+        let app_paths = AppPaths::new(dir.clone()).with_resource_dir(Some(resource_dir));
+        let server = LlamaServer::from_config(&config, &app_paths)
+            .expect("server should resolve the sidecar binary");
+
+        assert_eq!(server.binary_path(), Some(binary_path.as_path()));
 
         fs::remove_dir_all(&dir).expect("test directory should be removed");
     }

@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+
+echo "Kiroku bundles the real llama-server sidecar in the Windows MSI build." >&2
+echo "This Linux stub exists only to satisfy local development and CI checks." >&2
+exit 1

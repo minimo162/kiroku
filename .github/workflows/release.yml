@@ -1,0 +1,84 @@
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  windows-msi:
+    runs-on: windows-2022
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Ensure llama-server sidecar
+        shell: pwsh
+        env:
+          LLAMA_SERVER_SIDECAR_URL: ${{ vars.LLAMA_SERVER_SIDECAR_URL }}
+        run: |
+          $binaryDir = "src-tauri/binaries"
+          $binaryPath = Join-Path $binaryDir "llama-server-x86_64-pc-windows-msvc.exe"
+          $downloadPath = Join-Path $env:RUNNER_TEMP "llama-server-sidecar"
+          New-Item -ItemType Directory -Force -Path $binaryDir | Out-Null
+
+          if ($env:LLAMA_SERVER_SIDECAR_URL) {
+            $extension = [System.IO.Path]::GetExtension($env:LLAMA_SERVER_SIDECAR_URL)
+            if ($extension -ieq ".zip") {
+              $zipPath = "$downloadPath.zip"
+              Invoke-WebRequest -Uri $env:LLAMA_SERVER_SIDECAR_URL -OutFile $zipPath
+              $extractDir = Join-Path $env:RUNNER_TEMP "llama-server-sidecar-extracted"
+              if (Test-Path $extractDir) {
+                Remove-Item -Recurse -Force $extractDir
+              }
+              Expand-Archive -Path $zipPath -DestinationPath $extractDir
+              $candidate = Get-ChildItem -Path $extractDir -Recurse -Filter "llama-server.exe" | Select-Object -First 1
+              if (-not $candidate) {
+                throw "The downloaded archive did not contain llama-server.exe"
+              }
+              Copy-Item $candidate.FullName $binaryPath -Force
+            }
+            else {
+              Invoke-WebRequest -Uri $env:LLAMA_SERVER_SIDECAR_URL -OutFile $binaryPath
+            }
+          }
+
+          if (-not (Test-Path $binaryPath)) {
+            throw "Missing llama-server sidecar at $binaryPath. Commit the binary or set the LLAMA_SERVER_SIDECAR_URL repository variable."
+          }
+
+      - name: Verify app
+        run: |
+          npm run check
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build MSI
+        run: npm run tauri build
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kiroku-msi
+          path: src-tauri/target/release/bundle/msi/*.msi
+
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: src-tauri/target/release/bundle/msi/*.msi

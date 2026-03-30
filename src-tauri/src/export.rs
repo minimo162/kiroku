@@ -45,6 +45,8 @@ pub enum ExportError {
     InvalidDate(#[from] chrono::ParseError),
     #[error("failed to read export data")]
     Db(#[from] DbError),
+    #[error("capture {capture_id} contains unsupported binary-like data in description")]
+    UnsafeDescription { capture_id: String },
     #[error("failed to create export file")]
     Io(#[from] io::Error),
     #[error("failed to write CSV file")]
@@ -80,6 +82,7 @@ pub fn export_to_csv(
 
     let count = records.len();
     for record in records {
+        validate_description_for_export(&record.id, record.description.as_deref())?;
         writer.write_record([
             record.timestamp,
             record.app,
@@ -173,6 +176,46 @@ fn default_export_file_name() -> String {
     format!("kiroku_export_{}.csv", Local::now().format("%Y%m%d"))
 }
 
+fn validate_description_for_export(
+    capture_id: &str,
+    description: Option<&str>,
+) -> Result<(), ExportError> {
+    let Some(description) = description.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+
+    if contains_binary_like_payload(description) {
+        return Err(ExportError::UnsafeDescription {
+            capture_id: capture_id.to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn contains_binary_like_payload(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("data:image") || lower.contains("base64,") {
+        return true;
+    }
+
+    let mut run = 0;
+    for ch in text.chars() {
+        let is_base64ish =
+            ch.is_ascii_alphanumeric() || ch == '+' || ch == '/' || ch == '=' || ch == '-';
+        if is_base64ish {
+            run += 1;
+            if run >= 256 {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -184,7 +227,7 @@ mod tests {
 
     use rusqlite::Connection;
 
-    use super::{export_to_csv, preview_export_count, ExportFilter};
+    use super::{export_to_csv, preview_export_count, ExportError, ExportFilter};
     use crate::db::{initialize_db, insert_capture, mark_processed, update_description};
     use crate::models::CaptureRecord;
 
@@ -280,6 +323,27 @@ mod tests {
         assert!(contents.contains("timestamp,app,window_title,description"));
         assert!(contents.contains("Excel で売上表を確認している。"));
         assert!(contents.contains("2026-04-02T10:00:00+09:00,outlook.exe,受信トレイ,"));
+
+        fs::remove_dir_all(&dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn export_to_csv_rejects_binary_like_descriptions() {
+        let dir = test_dir("unsafe-description");
+        fs::create_dir_all(&dir).expect("test directory should exist");
+        let db_path = dir.join("kiroku.sqlite");
+        let conn = initialize_db(&db_path).expect("database should initialize");
+        seed_records(&conn);
+        update_description(&conn, "capture-a", "data:image/png;base64,AAAA")
+            .expect("unsafe description should update");
+
+        let error = export_to_csv(&conn, &ExportFilter::default(), &dir.join("unsafe.csv"))
+            .expect_err("binary-like descriptions should be rejected");
+
+        assert!(
+            matches!(error, ExportError::UnsafeDescription { capture_id } if capture_id == "capture-a"),
+            "unsafe descriptions should point back to the capture id"
+        );
 
         fs::remove_dir_all(&dir).expect("test directory should be removed");
     }

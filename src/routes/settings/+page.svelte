@@ -7,6 +7,7 @@
     dhash_threshold: number;
     auto_delete_images: boolean;
     scheduler_enabled: boolean;
+    setup_complete: boolean;
     batch_time: string;
     vlm_host: string;
     vlm_max_tokens: number;
@@ -18,6 +19,7 @@
     dhash_threshold: 10,
     auto_delete_images: true,
     scheduler_enabled: true,
+    setup_complete: false,
     batch_time: "22:00",
     vlm_host: "127.0.0.1:8080",
     vlm_max_tokens: 256,
@@ -178,10 +180,15 @@
           <p class="mt-2 text-sm text-ink-500">高いほど小さな画面変化を無視しやすくなります。</p>
         </div>
 
-        <label class="flex items-center justify-between rounded-2xl border border-ink-100 px-4 py-4">
+        <label class="flex items-center justify-between rounded-[1.75rem] border border-brass-200 bg-brass-50/80 px-4 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]">
           <div>
-            <p class="text-sm font-medium text-ink-700">VLM 処理後に画像を削除</p>
-            <p class="mt-1 text-sm text-ink-500">ローカル画像を残さず、テキスト記述だけを保持します。</p>
+            <div class="flex flex-wrap items-center gap-2">
+              <p class="text-sm font-semibold text-ink-900">画像を即時削除</p>
+              <span class="rounded-full bg-ink-900 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-white">推奨</span>
+            </div>
+            <p class="mt-2 text-sm text-ink-600">
+              VLM 処理後に画像と sidecar JSON を削除し、CSV にはテキストだけを残します。
+            </p>
           </div>
           <input class="h-5 w-5 accent-brass-600" type="checkbox" bind:checked={config.auto_delete_images} />
         </label>

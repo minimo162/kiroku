@@ -4,6 +4,7 @@ pub mod dashboard;
 pub mod db;
 pub mod diff;
 pub mod export;
+pub mod model_manager;
 pub mod models;
 pub mod preview;
 pub mod recorder;
@@ -15,10 +16,11 @@ pub mod window_meta;
 
 use tauri::Manager;
 
-use capture::capture_now;
+use capture::{capture_now, cleanup_capture_storage};
 use config::{get_config, save_config_command, select_data_dir, test_vlm_connection};
 use dashboard::{get_dashboard_snapshot, get_recent_captures_command, get_stats};
 use export::{export_csv, list_export_options, preview_csv_export};
+use model_manager::{complete_setup, download_model, get_setup_status};
 use preview::{
     get_capture_description_history, get_capture_preview_page, update_capture_description,
 };
@@ -38,6 +40,9 @@ pub fn run() {
         .setup(|app| {
             let state = AppState::new(app.handle())?;
             let scheduler_state = state.clone();
+            if let Err(error) = tauri::async_runtime::block_on(cleanup_capture_storage(&state)) {
+                eprintln!("startup capture cleanup failed: {error}");
+            }
             app.manage(state);
             setup_tray(app.handle())?;
             spawn_scheduler(app.handle().clone(), scheduler_state);
@@ -102,6 +107,9 @@ pub fn run() {
             save_config_command,
             select_data_dir,
             test_vlm_connection,
+            get_setup_status,
+            download_model,
+            complete_setup,
             preview_csv_export,
             export_csv,
             list_export_options,

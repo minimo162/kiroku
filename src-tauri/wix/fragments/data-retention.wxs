@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="TARGETDIR">
+      <Component Id="KirokuDataRetentionRegistry" Guid="*" Permanent="yes">
+        <RegistryKey Root="HKCU" Key="Software\Kiroku">
+          <RegistryValue Name="KeepUserData" Type="integer" Value="1" KeyPath="yes" />
+        </RegistryKey>
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>

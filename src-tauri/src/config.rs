@@ -3,7 +3,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use reqwest::Url;
 use tauri::{Emitter, Manager, Runtime};
 use tauri_plugin_dialog::DialogExt;
 use thiserror::Error;
@@ -12,7 +11,7 @@ use crate::{
     models::AppConfig,
     recorder::{start_recording_inner, stop_recording_inner},
     state::AppState,
-    vlm::server::{LlamaServer, VlmError},
+    vlm::server::{parse_host_and_port, LlamaServer, VlmError},
 };
 
 pub const CONFIG_FILE_NAME: &str = "config.json";
@@ -23,6 +22,7 @@ pub struct AppPaths {
     pub data_dir: PathBuf,
     pub config_path: PathBuf,
     pub db_path: PathBuf,
+    pub resource_dir: Option<PathBuf>,
 }
 
 impl AppPaths {
@@ -33,7 +33,13 @@ impl AppPaths {
             data_dir,
             config_path,
             db_path,
+            resource_dir: None,
         }
+    }
+
+    pub fn with_resource_dir(mut self, resource_dir: Option<PathBuf>) -> Self {
+        self.resource_dir = resource_dir;
+        self
     }
 }
 
@@ -54,7 +60,8 @@ pub fn resolve_app_paths<R: Runtime, M: Manager<R>>(manager: &M) -> Result<AppPa
         .path()
         .app_local_data_dir()
         .map_err(ConfigError::PathResolution)?;
-    Ok(AppPaths::new(data_dir))
+    let resource_dir = manager.path().resource_dir().ok();
+    Ok(AppPaths::new(data_dir).with_resource_dir(resource_dir))
 }
 
 pub fn load_config(path: &Path, default_data_dir: &Path) -> Result<AppConfig, ConfigError> {
@@ -116,6 +123,9 @@ pub async fn save_config_command(
         next_config.ensure_data_dir(&state.app_paths.data_dir);
     }
 
+    let next_server = LlamaServer::from_config(&next_config, &state.app_paths)
+        .map_err(|error| error.to_string())?;
+
     save_config(&state.app_paths.config_path, &next_config).map_err(|error| error.to_string())?;
 
     let was_recording = *state.is_recording.lock().await;
@@ -132,8 +142,7 @@ pub async fn save_config_command(
     {
         let mut server = state.vlm_server.lock().await;
         let _ = server.stop();
-        *server = LlamaServer::from_config(&next_config, &state.app_paths)
-            .map_err(|error| error.to_string())?;
+        *server = next_server;
     }
     {
         let mut vlm_state = state.vlm_state.lock().await;
@@ -169,21 +178,8 @@ pub async fn select_data_dir(app: tauri::AppHandle) -> Result<Option<String>, St
 
 #[tauri::command]
 pub async fn test_vlm_connection(vlm_host: String) -> Result<bool, String> {
-    let normalized = if vlm_host.contains("://") {
-        vlm_host
-    } else {
-        format!("http://{vlm_host}")
-    };
-
-    let url = Url::parse(&normalized).map_err(|error| error.to_string())?;
-    let health_url = format!(
-        "{}://{}:{}/health",
-        url.scheme(),
-        url.host_str()
-            .ok_or_else(|| "invalid VLM host".to_string())?,
-        url.port_or_known_default()
-            .ok_or_else(|| "invalid VLM host".to_string())?
-    );
+    let (host, port) = parse_host_and_port(&vlm_host).map_err(|error| error.to_string())?;
+    let health_url = format!("http://{host}:{port}/health");
 
     let response = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
@@ -207,6 +203,7 @@ mod tests {
     };
 
     use super::{load_config, load_or_create_config, AppConfig, CONFIG_FILE_NAME};
+    use crate::{config::AppPaths, vlm::server::LlamaServer};
 
     fn test_dir(test_name: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -245,6 +242,7 @@ mod tests {
   "dhash_threshold": 10,
   "auto_delete_images": true,
   "scheduler_enabled": true,
+  "setup_complete": false,
   "batch_time": "22:00",
   "vlm_host": "127.0.0.1:8080",
   "vlm_max_tokens": 256,
@@ -256,6 +254,27 @@ mod tests {
         let config = load_config(&config_path, &data_dir).expect("config should load");
 
         assert_eq!(config.data_dir, data_dir.to_string_lossy());
+
+        fs::remove_dir_all(&data_dir).expect("temporary config directory should be removed");
+    }
+
+    #[test]
+    fn remote_vlm_host_is_rejected_before_persisting() {
+        let data_dir = test_dir("reject-remote-vlm");
+        fs::create_dir_all(&data_dir).expect("temporary config directory should be created");
+
+        let config = AppConfig {
+            vlm_host: "api.openai.com:443".to_string(),
+            data_dir: data_dir.to_string_lossy().into_owned(),
+            ..AppConfig::default()
+        };
+
+        let error = LlamaServer::from_config(&config, &AppPaths::new(data_dir.clone()))
+            .expect_err("remote VLM host should fail");
+        assert!(
+            error.to_string().contains("localhost"),
+            "error should explain the localhost-only restriction"
+        );
 
         fs::remove_dir_all(&data_dir).expect("temporary config directory should be removed");
     }

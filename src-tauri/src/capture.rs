@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs, io,
     path::{Path, PathBuf},
     time::Duration,
@@ -17,7 +18,14 @@ use uuid::Uuid;
 #[cfg(target_os = "windows")]
 use xcap::Monitor;
 
-use crate::{db::insert_capture, models::CaptureRecord, state::AppState};
+use crate::{
+    db::{
+        clear_image_path, insert_capture, list_capture_image_paths, list_processed_capture_images,
+        DbError,
+    },
+    models::CaptureRecord,
+    state::AppState,
+};
 
 const CAPTURE_DIR_NAME: &str = "captures";
 
@@ -27,6 +35,12 @@ pub struct CapturedFrame {
     pub width: u32,
     pub height: u32,
     pub elapsed: Duration,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CleanupReport {
+    pub orphaned_images_deleted: usize,
+    pub processed_images_deleted: usize,
 }
 
 #[derive(Debug, Error)]
@@ -40,6 +54,8 @@ pub enum CaptureError {
     XCap(#[from] xcap::XCapError),
     #[error("failed to read or write capture files")]
     Io(#[from] io::Error),
+    #[error("failed to query capture records")]
+    Db(#[from] DbError),
     #[error("failed to encode screenshot")]
     Image(#[from] image::ImageError),
     #[error("failed to serialize capture metadata")]
@@ -132,13 +148,56 @@ pub fn metadata_path_for_image(image_path: &Path) -> PathBuf {
 
 pub fn remove_capture_artifacts(image_path: &Path) -> Result<(), CaptureError> {
     let metadata_path = metadata_path_for_image(image_path);
-    if metadata_path.exists() {
-        fs::remove_file(metadata_path)?;
-    }
-    if image_path.exists() {
-        fs::remove_file(image_path)?;
-    }
+    remove_file_if_exists(&metadata_path)?;
+    remove_file_if_exists(image_path)?;
     Ok(())
+}
+
+pub fn cleanup_orphaned_images(
+    data_dir: &Path,
+    conn: &rusqlite::Connection,
+) -> Result<CleanupReport, CaptureError> {
+    let capture_dir = capture_output_dir(data_dir)?;
+    let referenced_paths = list_capture_image_paths(conn)?
+        .into_iter()
+        .map(PathBuf::from)
+        .collect::<HashSet<_>>();
+    let mut report = CleanupReport::default();
+
+    for entry in fs::read_dir(&capture_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|value| value.to_str()) != Some("png") {
+            continue;
+        }
+
+        if !referenced_paths.contains(&path) {
+            remove_capture_artifacts(&path)?;
+            report.orphaned_images_deleted += 1;
+        }
+    }
+
+    for (capture_id, image_path) in list_processed_capture_images(conn)? {
+        remove_capture_artifacts(Path::new(&image_path))?;
+        clear_image_path(conn, &capture_id)?;
+        report.processed_images_deleted += 1;
+    }
+
+    Ok(report)
+}
+
+pub async fn cleanup_capture_storage(state: &AppState) -> Result<CleanupReport, CaptureError> {
+    let base_dir = state.capture_base_dir().await;
+    let db = state.db.lock().await;
+    cleanup_orphaned_images(&base_dir, &db)
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<(), io::Error> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 #[tauri::command]
@@ -173,11 +232,14 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use crate::models::CaptureRecord;
+    use crate::{
+        db::{get_capture_by_id, initialize_db, insert_capture, mark_processed},
+        models::CaptureRecord,
+    };
 
     use super::{
-        capture_output_dir, metadata_path_for_image, persist_capture_metadata,
-        remove_capture_artifacts,
+        capture_output_dir, cleanup_orphaned_images, metadata_path_for_image,
+        persist_capture_metadata, remove_capture_artifacts,
     };
 
     fn test_dir(test_name: &str) -> PathBuf {
@@ -251,6 +313,85 @@ mod tests {
             !metadata_path.exists(),
             "metadata placeholder should be removed"
         );
+
+        fs::remove_dir_all(&base_dir).expect("temporary capture directory should be removed");
+    }
+
+    #[test]
+    fn remove_capture_artifacts_ignores_missing_files() {
+        let base_dir = test_dir("missing-cleanup");
+        fs::create_dir_all(&base_dir).expect("temporary capture directory should be created");
+
+        let image_path = base_dir.join("missing.png");
+        remove_capture_artifacts(&image_path).expect("missing artifacts should be ignored");
+
+        fs::remove_dir_all(&base_dir).expect("temporary capture directory should be removed");
+    }
+
+    #[test]
+    fn cleanup_orphaned_images_deletes_untracked_png_files() {
+        let base_dir = test_dir("orphaned-images");
+        fs::create_dir_all(&base_dir).expect("temporary capture directory should be created");
+        let capture_dir = capture_output_dir(&base_dir).expect("capture directory should exist");
+        let db_path = base_dir.join("kiroku.sqlite");
+        let conn = initialize_db(&db_path).expect("database should initialize");
+
+        let orphaned_image = capture_dir.join("orphaned.png");
+        let orphaned_metadata = capture_dir.join("orphaned.json");
+        fs::write(&orphaned_image, b"png").expect("orphaned image should be created");
+        fs::write(&orphaned_metadata, b"{}").expect("orphaned metadata should be created");
+
+        let report = cleanup_orphaned_images(&base_dir, &conn).expect("cleanup should succeed");
+        assert_eq!(report.orphaned_images_deleted, 1);
+        assert_eq!(report.processed_images_deleted, 0);
+        assert!(!orphaned_image.exists(), "orphaned image should be removed");
+        assert!(
+            !orphaned_metadata.exists(),
+            "orphaned metadata should be removed"
+        );
+
+        fs::remove_dir_all(&base_dir).expect("temporary capture directory should be removed");
+    }
+
+    #[test]
+    fn cleanup_orphaned_images_removes_processed_capture_files_and_clears_path() {
+        let base_dir = test_dir("processed-images");
+        fs::create_dir_all(&base_dir).expect("temporary capture directory should be created");
+        let capture_dir = capture_output_dir(&base_dir).expect("capture directory should exist");
+        let db_path = base_dir.join("kiroku.sqlite");
+        let conn = initialize_db(&db_path).expect("database should initialize");
+
+        let image_path = capture_dir.join("processed.png");
+        let metadata_path = capture_dir.join("processed.json");
+        fs::write(&image_path, b"png").expect("processed image should be created");
+        fs::write(&metadata_path, b"{}").expect("processed metadata should be created");
+
+        let record = CaptureRecord {
+            id: "processed-capture".to_string(),
+            timestamp: "2026-03-30T22:00:00+09:00".to_string(),
+            app: "excel.exe".to_string(),
+            window_title: "月次決算.xlsx".to_string(),
+            image_path: Some(image_path.to_string_lossy().into_owned()),
+            description: Some("Excel で月次決算シートを確認している。".to_string()),
+            dhash: Some("0011aa22bb33cc44".to_string()),
+        };
+
+        insert_capture(&conn, &record).expect("processed capture should insert");
+        mark_processed(&conn, &record.id).expect("capture should mark processed");
+
+        let report = cleanup_orphaned_images(&base_dir, &conn).expect("cleanup should succeed");
+        assert_eq!(report.orphaned_images_deleted, 0);
+        assert_eq!(report.processed_images_deleted, 1);
+        assert!(!image_path.exists(), "processed image should be removed");
+        assert!(
+            !metadata_path.exists(),
+            "processed metadata should be removed"
+        );
+
+        let stored = get_capture_by_id(&conn, &record.id)
+            .expect("stored record should load")
+            .expect("stored record should exist");
+        assert_eq!(stored.image_path, None);
 
         fs::remove_dir_all(&base_dir).expect("temporary capture directory should be removed");
     }

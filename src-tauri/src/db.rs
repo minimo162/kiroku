@@ -129,6 +129,14 @@ pub fn mark_processed(conn: &Connection, id: &str) -> Result<(), DbError> {
     Ok(())
 }
 
+pub fn clear_image_path(conn: &Connection, id: &str) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE captures SET image_path = NULL WHERE id = ?1",
+        params![id],
+    )?;
+    Ok(())
+}
+
 pub fn get_unprocessed(conn: &Connection) -> Result<Vec<CaptureRecord>, DbError> {
     let mut stmt = conn.prepare(
         "SELECT id, timestamp, app, window_title, image_path, description, dhash
@@ -411,6 +419,41 @@ pub fn count_unprocessed_captures(conn: &Connection) -> Result<u64, DbError> {
     Ok(count)
 }
 
+pub fn list_capture_image_paths(conn: &Connection) -> Result<Vec<String>, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT image_path
+         FROM captures
+         WHERE image_path IS NOT NULL",
+    )?;
+
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut paths = Vec::new();
+    for row in rows {
+        paths.push(row?);
+    }
+
+    Ok(paths)
+}
+
+pub fn list_processed_capture_images(conn: &Connection) -> Result<Vec<(String, String)>, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, image_path
+         FROM captures
+         WHERE vlm_processed = 1
+           AND image_path IS NOT NULL",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut captures = Vec::new();
+    for row in rows {
+        captures.push(row?);
+    }
+
+    Ok(captures)
+}
+
 fn apply_migrations(conn: &Connection) -> Result<(), DbError> {
     let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
 
@@ -467,9 +510,11 @@ mod tests {
     };
 
     use super::{
-        count_captures_for_date, get_captures_by_date, get_description_history, get_unprocessed,
-        initialize_db, insert_capture, list_capture_apps, list_capture_dates, mark_processed,
-        query_captures_filtered, update_description, update_description_with_history,
+        clear_image_path, count_captures_for_date, get_capture_by_id, get_captures_by_date,
+        get_description_history, get_unprocessed, initialize_db, insert_capture, list_capture_apps,
+        list_capture_dates, list_capture_image_paths, list_processed_capture_images,
+        mark_processed, query_captures_filtered, update_description,
+        update_description_with_history,
     };
     use crate::models::CaptureRecord;
 
@@ -551,6 +596,45 @@ mod tests {
 
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, excel_record.id);
+
+        fs::remove_file(&db_path).expect("temporary database should be removed");
+    }
+
+    #[test]
+    fn image_path_queries_split_all_and_processed_records() {
+        let db_path = test_db_path("image-paths");
+        let conn = initialize_db(&db_path).expect("database should initialize");
+
+        let processed = sample_record();
+        let pending = CaptureRecord {
+            id: "capture-2".to_string(),
+            timestamp: "2026-03-31T08:00:00+09:00".to_string(),
+            app: "outlook.exe".to_string(),
+            window_title: "受信トレイ".to_string(),
+            image_path: Some("captures/pending.png".to_string()),
+            description: None,
+            dhash: Some("ff00".to_string()),
+        };
+
+        insert_capture(&conn, &processed).expect("processed record should insert");
+        insert_capture(&conn, &pending).expect("pending record should insert");
+        mark_processed(&conn, &processed.id).expect("processed record should update");
+
+        let all_paths = list_capture_image_paths(&conn).expect("image paths should load");
+        assert_eq!(all_paths.len(), 2);
+
+        let processed_paths =
+            list_processed_capture_images(&conn).expect("processed image paths should load");
+        assert_eq!(
+            processed_paths,
+            vec![(processed.id.clone(), processed.image_path.clone().unwrap())]
+        );
+
+        clear_image_path(&conn, &processed.id).expect("image path should clear");
+        let stored = get_capture_by_id(&conn, &processed.id)
+            .expect("stored record should load")
+            .expect("stored record should exist");
+        assert_eq!(stored.image_path, None);
 
         fs::remove_file(&db_path).expect("temporary database should be removed");
     }
