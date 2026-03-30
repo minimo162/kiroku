@@ -1,14 +1,20 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
+#[cfg(target_os = "windows")]
 use chrono::{Local, SecondsFormat};
+#[cfg(target_os = "windows")]
 use image::ImageFormat;
+#[cfg(target_os = "windows")]
+use std::time::Instant;
 use tauri::State;
 use thiserror::Error;
+#[cfg(target_os = "windows")]
 use uuid::Uuid;
+#[cfg(target_os = "windows")]
 use xcap::Monitor;
 
 use crate::{db::insert_capture, models::CaptureRecord, state::AppState};
@@ -25,8 +31,11 @@ pub struct CapturedFrame {
 
 #[derive(Debug, Error)]
 pub enum CaptureError {
+    #[error("screen capture is unsupported on this platform")]
+    UnsupportedPlatform,
     #[error("no primary monitor is available")]
     NoPrimaryMonitor,
+    #[cfg(target_os = "windows")]
     #[error("failed to enumerate or capture monitor")]
     XCap(#[from] xcap::XCapError),
     #[error("failed to read or write capture files")]
@@ -51,51 +60,60 @@ pub async fn capture_primary_monitor(output_dir: &Path) -> Result<CapturedFrame,
 }
 
 fn capture_primary_monitor_blocking(output_dir: &Path) -> Result<CapturedFrame, CaptureError> {
-    fs::create_dir_all(output_dir)?;
-
-    let start = Instant::now();
-    let monitors = Monitor::all()?;
-    let primary = monitors
-        .into_iter()
-        .find(|monitor| monitor.is_primary())
-        .ok_or(CaptureError::NoPrimaryMonitor)?;
-
-    let image = primary.capture_image()?;
-
-    let capture_id = Uuid::new_v4();
-    let captured_at = Local::now();
-    let filename = format!(
-        "screenshot_{}_{}.png",
-        captured_at.format("%Y%m%d_%H%M%S"),
-        capture_id.simple()
-    );
-    let image_path = output_dir.join(filename);
-
-    image.save_with_format(&image_path, ImageFormat::Png)?;
-
-    let record = CaptureRecord {
-        id: capture_id.to_string(),
-        timestamp: captured_at.to_rfc3339_opts(SecondsFormat::Secs, false),
-        app: "unknown".to_string(),
-        window_title: "unknown".to_string(),
-        image_path: Some(image_path.to_string_lossy().into_owned()),
-        description: None,
-        dhash: None,
-    };
-
-    persist_capture_metadata(&record, &image_path)?;
-
-    let elapsed = start.elapsed();
-    if elapsed > Duration::from_millis(500) {
-        eprintln!("capture exceeded target duration: {:?}", elapsed);
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = output_dir;
+        Err(CaptureError::UnsupportedPlatform)
     }
 
-    Ok(CapturedFrame {
-        record,
-        width: primary.width(),
-        height: primary.height(),
-        elapsed,
-    })
+    #[cfg(target_os = "windows")]
+    {
+        fs::create_dir_all(output_dir)?;
+
+        let start = Instant::now();
+        let monitors = Monitor::all()?;
+        let primary = monitors
+            .into_iter()
+            .find(|monitor| monitor.is_primary())
+            .ok_or(CaptureError::NoPrimaryMonitor)?;
+
+        let image = primary.capture_image()?;
+
+        let capture_id = Uuid::new_v4();
+        let captured_at = Local::now();
+        let filename = format!(
+            "screenshot_{}_{}.png",
+            captured_at.format("%Y%m%d_%H%M%S"),
+            capture_id.simple()
+        );
+        let image_path = output_dir.join(filename);
+
+        image.save_with_format(&image_path, ImageFormat::Png)?;
+
+        let record = CaptureRecord {
+            id: capture_id.to_string(),
+            timestamp: captured_at.to_rfc3339_opts(SecondsFormat::Secs, false),
+            app: "unknown".to_string(),
+            window_title: "unknown".to_string(),
+            image_path: Some(image_path.to_string_lossy().into_owned()),
+            description: None,
+            dhash: None,
+        };
+
+        persist_capture_metadata(&record, &image_path)?;
+
+        let elapsed = start.elapsed();
+        if elapsed > Duration::from_millis(500) {
+            eprintln!("capture exceeded target duration: {:?}", elapsed);
+        }
+
+        Ok(CapturedFrame {
+            record,
+            width: primary.width(),
+            height: primary.height(),
+            elapsed,
+        })
+    }
 }
 
 pub fn persist_capture_metadata(
