@@ -2,12 +2,14 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
+  import { addToast } from "$lib/toast.svelte";
 
   type ExportFilter = {
     start_date: string | null;
     end_date: string | null;
     apps: string[] | null;
     only_processed: boolean;
+    apply_masking: boolean;
   };
 
   type CaptureAppGroup = {
@@ -34,14 +36,14 @@
     start_date: today,
     end_date: today,
     apps: null,
-    only_processed: true
+    only_processed: true,
+    apply_masking: true
   });
   let options = $state<ExportOptions>({ apps: [] });
   let previewCount = $state(0);
   let loading = $state(true);
   let previewLoading = $state(false);
   let exporting = $state(false);
-  let message = $state<string | null>(null);
   let tauriAvailable = $state(false);
   let lastExportPath = $state<string | null>(null);
   let previewRequestId = 0;
@@ -50,9 +52,19 @@
     typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
   const hasSelectedApps = (app: string) => filter.apps?.includes(app) ?? false;
+  const dateRangeError = $derived(
+    filter.start_date && filter.end_date && filter.start_date > filter.end_date
+      ? "開始日は終了日以前にしてください"
+      : null
+  );
 
   async function refreshPreviewCount() {
     if (!isTauri()) return;
+    if (dateRangeError) {
+      previewCount = 0;
+      previewLoading = false;
+      return;
+    }
 
     const requestId = ++previewRequestId;
     previewLoading = true;
@@ -61,6 +73,8 @@
       if (requestId === previewRequestId) {
         previewCount = preview.count;
       }
+    } catch (error) {
+      addToast("error", error instanceof Error ? error.message : String(error));
     } finally {
       if (requestId === previewRequestId) {
         previewLoading = false;
@@ -83,6 +97,22 @@
     void refreshPreviewCount();
   }
 
+  function selectAllApps() {
+    filter = {
+      ...filter,
+      apps: options.apps.map((entry) => entry.app)
+    };
+    void refreshPreviewCount();
+  }
+
+  function clearApps() {
+    filter = {
+      ...filter,
+      apps: null
+    };
+    void refreshPreviewCount();
+  }
+
   async function loadOptions() {
     if (!isTauri()) {
       loading = false;
@@ -94,28 +124,27 @@
       options = await invoke<ExportOptions>("list_export_options");
       await refreshPreviewCount();
     } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
+      addToast("error", error instanceof Error ? error.message : String(error));
     } finally {
       loading = false;
     }
   }
 
   async function handleExport() {
-    if (!isTauri()) return;
+    if (!isTauri() || dateRangeError) return;
 
     exporting = true;
-    message = null;
     try {
       const result = await invoke<ExportResult | null>("export_csv", { filter });
       if (!result) {
-        message = "保存をキャンセルしました。";
+        addToast("info", "保存をキャンセルしました。");
         return;
       }
 
       lastExportPath = result.path;
-      message = `${result.count} 件を CSV に書き出しました。`;
+      addToast("success", `${result.count} 件を CSV に書き出しました。`);
     } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
+      addToast("error", error instanceof Error ? error.message : String(error));
     } finally {
       exporting = false;
     }
@@ -123,7 +152,11 @@
 
   async function revealExport() {
     if (!lastExportPath) return;
-    await revealItemInDir(lastExportPath);
+    try {
+      await revealItemInDir(lastExportPath);
+    } catch (error) {
+      addToast("error", error instanceof Error ? error.message : String(error));
+    }
   }
 
   onMount(() => {
@@ -131,7 +164,7 @@
     void loadOptions();
 
     if (!tauriAvailable) {
-      message = "ブラウザプレビューでは CSV エクスポートを実行できません。";
+      addToast("info", "ブラウザプレビューでは CSV エクスポートを実行できません。");
     }
   });
 </script>
@@ -159,6 +192,7 @@
         <div class="mt-4 space-y-3 text-sm leading-6 text-white/80">
           <p>CSV は UTF-8 BOM 付きで出力され、Excel でも文字化けしにくい形式です。</p>
           <p>アプリフィルタ未選択時は、全アプリが対象になります。</p>
+          <p>マスキングを有効にすると、設定画面で登録した置換ルールを適用します。</p>
           <p>出力後は Explorer で保存先ファイルをそのまま表示できます。</p>
         </div>
       </div>
@@ -192,6 +226,9 @@
           />
         </div>
       </div>
+      {#if dateRangeError}
+        <p class="mt-3 text-sm text-cinnabar-700">{dateRangeError}</p>
+      {/if}
 
       <label class="mt-5 flex items-center justify-between rounded-2xl border border-ink-100 px-4 py-4">
         <div>
@@ -206,15 +243,47 @@
         />
       </label>
 
+      <label class="mt-5 flex items-center justify-between rounded-2xl border border-brass-200 bg-brass-50/70 px-4 py-4">
+        <div>
+          <p class="text-sm font-medium text-ink-700">マスキングを適用</p>
+          <p class="mt-1 text-sm text-ink-500">
+            設定画面のルールで `window_title` と `description` を置換してから出力します。
+          </p>
+        </div>
+        <input
+          class="h-5 w-5 accent-brass-600"
+          type="checkbox"
+          bind:checked={filter.apply_masking}
+        />
+      </label>
+
       <div class="mt-5">
         <div class="flex items-center justify-between gap-3">
           <div>
             <p class="text-sm font-medium text-ink-700">対象アプリ</p>
             <p class="mt-1 text-sm text-ink-500">複数選択できます。未選択なら全件対象です。</p>
           </div>
-          {#if loading}
-            <span class="text-sm text-ink-400">読み込み中...</span>
-          {/if}
+          <div class="flex items-center gap-3">
+            <button
+              class="text-sm font-semibold text-brass-700 transition hover:text-brass-800"
+              type="button"
+              onclick={selectAllApps}
+              disabled={options.apps.length === 0}
+            >
+              全選択
+            </button>
+            <button
+              class="text-sm font-semibold text-brass-700 transition hover:text-brass-800"
+              type="button"
+              onclick={clearApps}
+              disabled={options.apps.length === 0}
+            >
+              全解除
+            </button>
+            {#if loading}
+              <span class="text-sm text-ink-400">読み込み中...</span>
+            {/if}
+          </div>
         </div>
 
         <div class="mt-4 grid gap-3 sm:grid-cols-2">
@@ -272,17 +341,11 @@
         <p><span class="font-semibold text-ink-900">処理条件:</span> {filter.only_processed ? "VLM 処理済みのみ" : "未処理も含む"}</p>
       </div>
 
-      {#if message}
-        <div class="mt-5 rounded-[1.25rem] border border-brass-100 bg-brass-50 px-4 py-3 text-sm text-brass-800">
-          {message}
-        </div>
-      {/if}
-
       <div class="mt-6 flex flex-wrap gap-3">
         <button
           class="rounded-full bg-ink-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-60"
           onclick={handleExport}
-          disabled={!tauriAvailable || exporting || previewCount === 0}
+          disabled={!tauriAvailable || exporting || previewCount === 0 || !!dateRangeError}
         >
           {exporting ? "エクスポート中..." : "CSV をエクスポート"}
         </button>

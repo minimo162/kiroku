@@ -5,6 +5,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { page } from "$app/stores";
   import type { Snippet } from "svelte";
+  import ToastContainer from "$lib/components/ToastContainer.svelte";
 
   let { children }: { children: Snippet } = $props();
 
@@ -14,6 +15,7 @@
 
   const navItems = [
     { href: "/dashboard", label: "ダッシュボード", status: "live" },
+    { href: "/history", label: "履歴", status: "live" },
     { href: "/settings", label: "設定", status: "live" },
     { href: "/preview", label: "記述プレビュー", status: "live" },
     { href: "/export", label: "エクスポート", status: "live" }
@@ -65,6 +67,7 @@
       {@render children()}
     </div>
   </main>
+  <ToastContainer />
 {:else}
   <div class="min-h-screen px-4 py-4 text-ink-900 sm:px-6 lg:px-8">
     <div class="mx-auto grid min-h-[calc(100vh-2rem)] max-w-7xl gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
@@ -123,4 +126,5 @@
       </main>
     </div>
   </div>
+  <ToastContainer />
 {/if}

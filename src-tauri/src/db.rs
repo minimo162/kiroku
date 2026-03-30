@@ -224,6 +224,70 @@ pub fn query_captures_filtered(
     Ok(captures)
 }
 
+pub fn search_captures(
+    conn: &Connection,
+    query: Option<&str>,
+    apps: Option<&[String]>,
+    start_date: Option<&str>,
+    end_date: Option<&str>,
+    page: u64,
+    page_size: u64,
+) -> Result<Vec<StoredCaptureRecord>, DbError> {
+    let (mut sql, mut params) = build_capture_search_sql(query, apps, start_date, end_date);
+    let offset = page.saturating_sub(1) * page_size;
+
+    sql.push_str(" ORDER BY timestamp DESC LIMIT ? OFFSET ?");
+    params.push(page_size.to_string());
+    params.push(offset.to_string());
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        params_from_iter(params.iter().map(|value| value as &dyn ToSql)),
+        |row| {
+            Ok(StoredCaptureRecord {
+                id: row.get(0)?,
+                timestamp: row.get(1)?,
+                app: row.get(2)?,
+                window_title: row.get(3)?,
+                image_path: row.get(4)?,
+                description: row.get(5)?,
+                dhash: row.get(6)?,
+                vlm_processed: row.get::<_, i64>(7)? != 0,
+            })
+        },
+    )?;
+
+    let mut captures = Vec::new();
+    for row in rows {
+        captures.push(row?);
+    }
+
+    Ok(captures)
+}
+
+pub fn count_search_captures(
+    conn: &Connection,
+    query: Option<&str>,
+    apps: Option<&[String]>,
+    start_date: Option<&str>,
+    end_date: Option<&str>,
+) -> Result<u64, DbError> {
+    let (sql, params) = build_capture_search_sql(query, apps, start_date, end_date);
+    let count_sql = sql.replacen(
+        "SELECT id, timestamp, app, window_title, image_path, description, dhash, vlm_processed",
+        "SELECT COUNT(*)",
+        1,
+    );
+
+    let count = conn.query_row(
+        &count_sql,
+        params_from_iter(params.iter().map(|value| value as &dyn ToSql)),
+        |row| row.get::<_, u64>(0),
+    )?;
+
+    Ok(count)
+}
+
 pub fn get_recent_captures(
     conn: &Connection,
     limit: usize,
@@ -326,6 +390,60 @@ pub fn list_capture_apps(conn: &Connection) -> Result<Vec<CaptureAppGroup>, DbEr
     }
 
     Ok(apps)
+}
+
+fn build_capture_search_sql(
+    query: Option<&str>,
+    apps: Option<&[String]>,
+    start_date: Option<&str>,
+    end_date: Option<&str>,
+) -> (String, Vec<String>) {
+    let mut sql = String::from(
+        "SELECT id, timestamp, app, window_title, image_path, description, dhash, vlm_processed
+         FROM captures
+         WHERE 1 = 1",
+    );
+    let mut params = Vec::<String>::new();
+
+    if let Some(query) = query.map(str::trim).filter(|value| !value.is_empty()) {
+        let pattern = format!("%{}%", escape_like_pattern(query));
+        sql.push_str(
+            " AND (
+                window_title LIKE ? ESCAPE '\\'
+                OR COALESCE(description, '') LIKE ? ESCAPE '\\'
+                OR app LIKE ? ESCAPE '\\'
+            )",
+        );
+        params.push(pattern.clone());
+        params.push(pattern.clone());
+        params.push(pattern);
+    }
+
+    if let Some(start_date) = start_date {
+        sql.push_str(" AND substr(timestamp, 1, 10) >= ?");
+        params.push(start_date.to_string());
+    }
+
+    if let Some(end_date) = end_date {
+        sql.push_str(" AND substr(timestamp, 1, 10) <= ?");
+        params.push(end_date.to_string());
+    }
+
+    if let Some(apps) = apps.filter(|apps| !apps.is_empty()) {
+        sql.push_str(" AND app IN (");
+        sql.push_str(&vec!["?"; apps.len()].join(","));
+        sql.push(')');
+        params.extend(apps.iter().cloned());
+    }
+
+    (sql, params)
+}
+
+fn escape_like_pattern(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 pub fn count_captures_for_date(conn: &Connection, date: &str) -> Result<u64, DbError> {
@@ -510,11 +628,11 @@ mod tests {
     };
 
     use super::{
-        clear_image_path, count_captures_for_date, get_capture_by_id, get_captures_by_date,
-        get_description_history, get_unprocessed, initialize_db, insert_capture, list_capture_apps,
-        list_capture_dates, list_capture_image_paths, list_processed_capture_images,
-        mark_processed, query_captures_filtered, update_description,
-        update_description_with_history,
+        clear_image_path, count_captures_for_date, count_search_captures, get_capture_by_id,
+        get_captures_by_date, get_description_history, get_unprocessed, initialize_db,
+        insert_capture, list_capture_apps, list_capture_dates, list_capture_image_paths,
+        list_processed_capture_images, mark_processed, query_captures_filtered, search_captures,
+        update_description, update_description_with_history,
     };
     use crate::models::CaptureRecord;
 
@@ -635,6 +753,52 @@ mod tests {
             .expect("stored record should load")
             .expect("stored record should exist");
         assert_eq!(stored.image_path, None);
+
+        fs::remove_file(&db_path).expect("temporary database should be removed");
+    }
+
+    #[test]
+    fn search_captures_filters_by_query_app_and_date_range() {
+        let db_path = test_db_path("search");
+        let conn = initialize_db(&db_path).expect("database should initialize");
+
+        let excel_record = sample_record();
+        let outlook_record = CaptureRecord {
+            id: "capture-2".to_string(),
+            timestamp: "2026-04-02T09:30:00+09:00".to_string(),
+            app: "outlook.exe".to_string(),
+            window_title: "受信トレイ - 月次決算".to_string(),
+            image_path: Some("captures/outlook.png".to_string()),
+            description: Some("Outlook で子会社へ連結PKGの提出依頼メールを作成".to_string()),
+            dhash: Some("abcd".to_string()),
+        };
+
+        insert_capture(&conn, &excel_record).expect("excel record should insert");
+        insert_capture(&conn, &outlook_record).expect("outlook record should insert");
+
+        let total = count_search_captures(
+            &conn,
+            Some("連結PKG"),
+            Some(&["outlook.exe".to_string()]),
+            Some("2026-04-02"),
+            Some("2026-04-02"),
+        )
+        .expect("search count should load");
+        assert_eq!(total, 1);
+
+        let results = search_captures(
+            &conn,
+            Some("連結PKG"),
+            Some(&["outlook.exe".to_string()]),
+            Some("2026-04-02"),
+            Some("2026-04-02"),
+            1,
+            50,
+        )
+        .expect("search results should load");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, outlook_record.id);
 
         fs::remove_file(&db_path).expect("temporary database should be removed");
     }

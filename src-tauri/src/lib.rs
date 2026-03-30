@@ -4,6 +4,7 @@ pub mod dashboard;
 pub mod db;
 pub mod diff;
 pub mod export;
+pub mod history;
 pub mod model_manager;
 pub mod models;
 pub mod preview;
@@ -18,8 +19,9 @@ use tauri::Manager;
 
 use capture::{capture_now, cleanup_capture_storage};
 use config::{get_config, save_config_command, select_data_dir, test_vlm_connection};
-use dashboard::{get_dashboard_snapshot, get_recent_captures_command, get_stats};
+use dashboard::{clear_last_error, get_dashboard_snapshot, get_recent_captures_command, get_stats};
 use export::{export_csv, list_export_options, preview_csv_export};
+use history::search_captures;
 use model_manager::{complete_setup, download_model, get_setup_status};
 use preview::{
     get_capture_description_history, get_capture_preview_page, update_capture_description,
@@ -101,6 +103,7 @@ pub fn run() {
             pause_vlm_batch,
             resume_vlm_batch,
             get_stats,
+            clear_last_error,
             get_recent_captures_command,
             get_dashboard_snapshot,
             get_config,
@@ -113,6 +116,7 @@ pub fn run() {
             preview_csv_export,
             export_csv,
             list_export_options,
+            search_captures,
             get_capture_preview_page,
             update_capture_description,
             get_capture_description_history

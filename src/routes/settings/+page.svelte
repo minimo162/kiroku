@@ -1,6 +1,13 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { addToast } from "$lib/toast.svelte";
+
+  type MaskRule = {
+    pattern: string;
+    replacement: string;
+    is_regex: boolean;
+  };
 
   type AppConfig = {
     capture_interval_secs: number;
@@ -12,7 +19,16 @@
     vlm_host: string;
     vlm_max_tokens: number;
     data_dir: string;
+    system_prompt: string;
+    user_prompt: string;
+    mask_rules: MaskRule[];
   };
+
+  const createMaskRule = (): MaskRule => ({
+    pattern: "",
+    replacement: "[MASKED]",
+    is_regex: false
+  });
 
   const defaultConfig: AppConfig = {
     capture_interval_secs: 30,
@@ -23,7 +39,12 @@
     batch_time: "22:00",
     vlm_host: "127.0.0.1:8080",
     vlm_max_tokens: 256,
-    data_dir: ""
+    data_dir: "",
+    system_prompt:
+      "あなたは経理部門向けの業務記録アシスタントです。画面上で確認できる事実を優先し、日本語で簡潔に記述してください。SAP GUI、Excel、Outlook、Teams などの画面を対象とし、連結PKG、内部取引消去、UPI、月次決算、メール確認、会議参加などの業務文脈が明確な場合のみ用語を使ってください。推測は控えめにし、不確実な場合は一般的な表現に留めてください。",
+    user_prompt:
+      "このスクリーンショットに写っている業務操作を1から3文で説明してください。必ず次の観点を含めてください: 使用中のアプリケーション、実行している操作、表示されているデータや対象。出力は自然な日本語の文章のみとし、箇条書きやJSONは使わないでください。",
+    mask_rules: []
   };
 
   let config = $state<AppConfig>({ ...defaultConfig });
@@ -31,12 +52,48 @@
   let saving = $state(false);
   let testing = $state(false);
   let selectingFolder = $state(false);
-  let message = $state<string | null>(null);
-  let testMessage = $state<string | null>(null);
+  let maskPreviewInput = $state("株式会社A の売上 120,000 円を Excel で確認");
   let tauriAvailable = $state(false);
+  let fieldErrors = $state({
+    vlmHost: null as string | null,
+    vlmMaxTokens: null as string | null
+  });
+  let touched = $state({
+    vlmHost: false,
+    vlmMaxTokens: false
+  });
 
   const isTauri = () =>
     typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+  function validateVlmHost(value: string) {
+    return /^[^:\s]+:\d+$/.test(value.trim()) ? null : "host:port 形式で入力してください";
+  }
+
+  function validateMaxTokens(value: number) {
+    return value >= 64 && value <= 2048 ? null : "64〜2048 の範囲で入力してください";
+  }
+
+  function refreshValidation() {
+    fieldErrors = {
+      vlmHost: validateVlmHost(config.vlm_host),
+      vlmMaxTokens: validateMaxTokens(config.vlm_max_tokens)
+    };
+  }
+
+  function touchField(field: keyof typeof touched) {
+    touched = { ...touched, [field]: true };
+    refreshValidation();
+  }
+
+  function currentValidationErrors() {
+    return {
+      vlmHost: validateVlmHost(config.vlm_host),
+      vlmMaxTokens: validateMaxTokens(config.vlm_max_tokens)
+    };
+  }
+
+  let hasErrors = $derived(Boolean(fieldErrors.vlmHost || fieldErrors.vlmMaxTokens));
 
   async function loadConfig() {
     if (!isTauri()) {
@@ -44,20 +101,32 @@
       return;
     }
 
-    config = await invoke<AppConfig>("get_config");
-    loading = false;
+    try {
+      config = await invoke<AppConfig>("get_config");
+      refreshValidation();
+    } catch (error) {
+      addToast("error", error instanceof Error ? error.message : String(error));
+    } finally {
+      loading = false;
+    }
   }
 
   async function saveConfig() {
     if (!isTauri()) return;
+    const nextErrors = currentValidationErrors();
+    fieldErrors = nextErrors;
+    if (nextErrors.vlmHost || nextErrors.vlmMaxTokens) {
+      touched = { vlmHost: true, vlmMaxTokens: true };
+      addToast("error", "入力エラーを解消してから保存してください。");
+      return;
+    }
 
     saving = true;
-    message = null;
     try {
       config = await invoke<AppConfig>("save_config_command", { config });
-      message = "設定を保存しました。記録中だった場合は新しい設定で再開しています。";
+      addToast("success", "設定を保存しました。記録中だった場合は新しい設定で再開しています。");
     } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
+      addToast("error", error instanceof Error ? error.message : String(error));
     } finally {
       saving = false;
     }
@@ -79,27 +148,106 @@
 
   async function testConnection() {
     if (!isTauri()) return;
+    const hostError = validateVlmHost(config.vlm_host);
+    fieldErrors = {
+      ...fieldErrors,
+      vlmHost: hostError
+    };
+    touched = {
+      ...touched,
+      vlmHost: true
+    };
+    if (hostError) {
+      addToast("error", hostError);
+      return;
+    }
 
     testing = true;
-    testMessage = null;
     try {
       const ok = await invoke<boolean>("test_vlm_connection", { vlmHost: config.vlm_host });
-      testMessage = ok
-        ? "VLM サーバーへの接続に成功しました。"
-        : "VLM サーバーは応答しましたが、正常ステータスではありません。";
+      addToast(
+        ok ? "success" : "info",
+        ok
+          ? "VLM サーバーへの接続に成功しました。"
+          : "VLM サーバーは応答しましたが、正常ステータスではありません。"
+      );
     } catch (error) {
-      testMessage = error instanceof Error ? error.message : String(error);
+      addToast("error", error instanceof Error ? error.message : String(error));
     } finally {
       testing = false;
+    }
+  }
+
+  function addMaskRule() {
+    config = {
+      ...config,
+      mask_rules: [...config.mask_rules, createMaskRule()]
+    };
+  }
+
+  function updateMaskRule(index: number, nextRule: MaskRule) {
+    config = {
+      ...config,
+      mask_rules: config.mask_rules.map((rule, currentIndex) =>
+        currentIndex === index ? nextRule : rule
+      )
+    };
+  }
+
+  function removeMaskRule(index: number) {
+    config = {
+      ...config,
+      mask_rules: config.mask_rules.filter((_, currentIndex) => currentIndex !== index)
+    };
+  }
+
+  const buildMaskPreview = () => {
+    try {
+      const text = config.mask_rules.reduce((current, rule) => {
+        if (!rule.pattern.trim()) {
+          return current;
+        }
+
+        const replacement = rule.replacement || "[MASKED]";
+        if (rule.is_regex) {
+          return current.replace(new RegExp(rule.pattern, "g"), replacement);
+        }
+
+        return current.split(rule.pattern).join(replacement);
+      }, maskPreviewInput);
+      return { text, error: null };
+    } catch (error) {
+      return {
+        text: maskPreviewInput,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  };
+
+  let maskPreview = $derived.by(() => buildMaskPreview());
+
+  function handleKeyDown(event: KeyboardEvent) {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      if (!saving && !loading && !hasErrors) {
+        void saveConfig();
+      }
     }
   }
 
   onMount(() => {
     tauriAvailable = isTauri();
     void loadConfig();
+    window.addEventListener("keydown", handleKeyDown);
 
     if (!tauriAvailable) {
-      message = "ブラウザプレビューでは設定の保存や接続テストを実行できません。";
+      addToast("info", "ブラウザプレビューでは設定の保存や接続テストを実行できません。");
+    }
+  });
+
+  onDestroy(() => {
+    if (typeof window !== "undefined") {
+      window.removeEventListener("keydown", handleKeyDown);
     }
   });
 </script>
@@ -229,7 +377,12 @@
             type="text"
             bind:value={config.vlm_host}
             placeholder="127.0.0.1:8080"
+            oninput={refreshValidation}
+            onblur={() => touchField("vlmHost")}
           />
+          {#if touched.vlmHost && fieldErrors.vlmHost}
+            <p class="mt-2 text-sm text-cinnabar-700">{fieldErrors.vlmHost}</p>
+          {/if}
         </div>
 
         <div>
@@ -242,7 +395,12 @@
             max="2048"
             step="64"
             bind:value={config.vlm_max_tokens}
+            oninput={refreshValidation}
+            onblur={() => touchField("vlmMaxTokens")}
           />
+          {#if touched.vlmMaxTokens && fieldErrors.vlmMaxTokens}
+            <p class="mt-2 text-sm text-cinnabar-700">{fieldErrors.vlmMaxTokens}</p>
+          {/if}
         </div>
 
         <div>
@@ -265,12 +423,137 @@
           </div>
         </div>
 
+        <div class="rounded-[1.5rem] border border-ink-100 bg-ink-50/70 px-4 py-4">
+          <div class="flex items-start justify-between gap-4">
+            <div>
+              <p class="text-sm font-medium text-ink-700">VLM プロンプト最適化</p>
+              <p class="mt-1 text-sm leading-6 text-ink-500">
+                経理業務向けの既定プロンプトをベースに、画面記述の粒度や表現を調整できます。
+              </p>
+            </div>
+            <span class="rounded-full bg-brass-100 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-brass-700">
+              Task 21
+            </span>
+          </div>
+
+          <div class="mt-5 space-y-4">
+            <div>
+              <label class="text-sm font-medium text-ink-700" for="system-prompt">システムプロンプト</label>
+              <textarea
+                id="system-prompt"
+                class="mt-3 min-h-32 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm leading-6 text-ink-700 outline-none transition focus:border-brass-300"
+                bind:value={config.system_prompt}
+              ></textarea>
+            </div>
+
+            <div>
+              <label class="text-sm font-medium text-ink-700" for="user-prompt">ユーザープロンプト</label>
+              <textarea
+                id="user-prompt"
+                class="mt-3 min-h-28 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm leading-6 text-ink-700 outline-none transition focus:border-brass-300"
+                bind:value={config.user_prompt}
+              ></textarea>
+            </div>
+          </div>
+        </div>
+
+        <div class="rounded-[1.5rem] border border-ink-100 bg-white px-4 py-4">
+          <div class="flex items-start justify-between gap-4">
+            <div>
+              <p class="text-sm font-medium text-ink-700">マスキングルール</p>
+              <p class="mt-1 text-sm leading-6 text-ink-500">
+                CSV エクスポート時に、取引先名や金額などの表現を自動置換します。
+              </p>
+            </div>
+            <button
+              class="rounded-full border border-ink-200 bg-white px-4 py-2 text-sm font-semibold text-ink-700 transition hover:border-brass-300 hover:text-brass-700"
+              type="button"
+              onclick={addMaskRule}
+            >
+              ルールを追加
+            </button>
+          </div>
+
+          <div class="mt-4 space-y-3">
+            {#if config.mask_rules.length === 0}
+              <div class="rounded-2xl border border-dashed border-ink-200 px-4 py-6 text-sm text-ink-400">
+                まだマスキングルールはありません。必要な場合のみ追加してください。
+              </div>
+            {:else}
+              {#each config.mask_rules as rule, index}
+                <div class="rounded-2xl border border-ink-100 bg-ink-50/70 px-4 py-4">
+                  <div class="grid gap-3 lg:grid-cols-[1.1fr_0.9fr_auto]">
+                    <input
+                      class="rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300"
+                      type="text"
+                      value={rule.pattern}
+                      placeholder="例: 株式会社A または \\b\\d{3},\\d{3}\\b"
+                      oninput={(event) =>
+                        updateMaskRule(index, {
+                          ...rule,
+                          pattern: (event.currentTarget as HTMLInputElement).value
+                        })}
+                    />
+                    <input
+                      class="rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300"
+                      type="text"
+                      value={rule.replacement}
+                      placeholder="[MASKED]"
+                      oninput={(event) =>
+                        updateMaskRule(index, {
+                          ...rule,
+                          replacement: (event.currentTarget as HTMLInputElement).value
+                        })}
+                    />
+                    <button
+                      class="rounded-full border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 transition hover:border-rose-300"
+                      type="button"
+                      onclick={() => removeMaskRule(index)}
+                    >
+                      削除
+                    </button>
+                  </div>
+
+                  <label class="mt-3 flex items-center gap-3 text-sm text-ink-600">
+                    <input
+                      class="h-4 w-4 accent-brass-600"
+                      type="checkbox"
+                      checked={rule.is_regex}
+                      onchange={(event) =>
+                        updateMaskRule(index, {
+                          ...rule,
+                          is_regex: (event.currentTarget as HTMLInputElement).checked
+                        })}
+                    />
+                    正規表現として扱う
+                  </label>
+                </div>
+              {/each}
+            {/if}
+          </div>
+
+          <div class="mt-4 rounded-2xl border border-ink-100 bg-ink-50/70 px-4 py-4">
+            <label class="text-sm font-medium text-ink-700" for="mask-preview">置換テスト</label>
+            <textarea
+              id="mask-preview"
+              class="mt-3 min-h-24 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm leading-6 text-ink-700 outline-none transition focus:border-brass-300"
+              bind:value={maskPreviewInput}
+            ></textarea>
+            <div class="mt-3 rounded-2xl border border-dashed border-brass-200 bg-brass-50/60 px-4 py-4 text-sm leading-6 text-ink-700">
+              {maskPreview.text}
+            </div>
+            {#if maskPreview.error}
+              <p class="mt-2 text-sm leading-6 text-brass-700">{maskPreview.error}</p>
+            {/if}
+          </div>
+        </div>
+
         <div class="rounded-2xl border border-ink-100 bg-ink-50/70 px-4 py-4">
           <div class="flex flex-wrap gap-3">
             <button
               class="rounded-full bg-ink-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-60"
               onclick={saveConfig}
-              disabled={!tauriAvailable || saving}
+              disabled={!tauriAvailable || saving || hasErrors}
             >
               {saving ? "保存中..." : "設定を保存"}
             </button>
@@ -282,13 +565,7 @@
               {testing ? "確認中..." : "VLM 接続テスト"}
             </button>
           </div>
-
-          {#if message}
-            <p class="mt-4 text-sm leading-6 text-brass-700">{message}</p>
-          {/if}
-          {#if testMessage}
-            <p class="mt-2 text-sm leading-6 text-ink-600">{testMessage}</p>
-          {/if}
+          <p class="mt-4 text-sm leading-6 text-ink-500">`Ctrl+S` でも設定を保存できます。</p>
         </div>
       </div>
     </article>

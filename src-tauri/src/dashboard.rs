@@ -1,5 +1,5 @@
 use serde::Serialize;
-use tauri::State;
+use tauri::{Emitter, State};
 
 use crate::{
     db::{count_processed_captures, get_recent_captures, StoredCaptureRecord},
@@ -62,6 +62,21 @@ pub async fn get_dashboard_snapshot(
         vlm_progress,
         recent_captures,
     })
+}
+
+#[tauri::command]
+pub async fn clear_last_error(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    {
+        let mut vlm_state = state.vlm_state.lock().await;
+        vlm_state.last_error = None;
+    }
+
+    let snapshot = build_dashboard_stats(state.inner()).await?;
+    let _ = app.emit("vlm-status", &snapshot);
+    Ok(true)
 }
 
 async fn build_dashboard_stats(state: &AppState) -> Result<DashboardStats, String> {

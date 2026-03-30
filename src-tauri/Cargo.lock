@@ -2571,6 +2571,7 @@ dependencies = [
  "csv",
  "futures-util",
  "image",
+ "regex",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",

@@ -10,7 +10,10 @@ use reqwest::Client;
 use serde_json::json;
 use tokio::{task::spawn_blocking, time::sleep};
 
-use crate::vlm::server::VlmError;
+use crate::{
+    models::{default_system_prompt, default_user_prompt},
+    vlm::server::VlmError,
+};
 
 const MAX_IMAGE_WIDTH: u32 = 1280;
 const MAX_IMAGE_HEIGHT: u32 = 720;
@@ -18,21 +21,37 @@ const REQUEST_TIMEOUT_SECS: u64 = 60;
 const MAX_RETRIES: usize = 3;
 const INITIAL_BACKOFF_MS: u64 = 500;
 
-const SYSTEM_PROMPT: &str = "あなたは業務PC画面の分析アシスタントです。スクリーンショットを見て、実行中の業務と操作内容を日本語で簡潔に記述してください。アプリケーション名、操作内容、表示データの種類を含めてください。";
-const USER_PROMPT: &str = "この画面スクリーンショットに写っている業務操作を説明してください。1-3文で簡潔に記述してください。";
+pub struct PromptContext<'a> {
+    pub app: Option<&'a str>,
+    pub window_title: Option<&'a str>,
+    pub system_prompt: Option<&'a str>,
+    pub user_prompt: Option<&'a str>,
+}
 
 pub async fn describe_screenshot(
     client: &Client,
     image_path: &Path,
     server_url: &str,
     max_tokens: u32,
+    prompt_context: PromptContext<'_>,
 ) -> Result<String, VlmError> {
     let started_at = Instant::now();
     let image_b64 = load_resized_image_base64(image_path).await?;
     let endpoint = format!("{}/v1/chat/completions", server_url.trim_end_matches('/'));
+    let system_prompt = resolve_prompt(prompt_context.system_prompt, default_system_prompt);
+    let user_prompt = build_user_prompt(&prompt_context);
 
     for attempt in 0..MAX_RETRIES {
-        match request_description(client, &endpoint, &image_b64, max_tokens).await {
+        match request_description(
+            client,
+            &endpoint,
+            &image_b64,
+            max_tokens,
+            &system_prompt,
+            &user_prompt,
+        )
+        .await
+        {
             Ok(description) => {
                 eprintln!("vlm inference completed in {:?}", started_at.elapsed());
                 return Ok(description);
@@ -55,12 +74,14 @@ async fn request_description(
     endpoint: &str,
     image_b64: &str,
     max_tokens: u32,
+    system_prompt: &str,
+    user_prompt: &str,
 ) -> Result<String, VlmError> {
     let payload = json!({
         "model": "qwen",
         "messages": [{
             "role": "system",
-            "content": SYSTEM_PROMPT
+            "content": system_prompt
         }, {
             "role": "user",
             "content": [{
@@ -70,7 +91,7 @@ async fn request_description(
                 }
             }, {
                 "type": "text",
-                "text": USER_PROMPT
+                "text": user_prompt
             }]
         }],
         "max_tokens": max_tokens,
@@ -131,6 +152,44 @@ fn extract_description(response: &serde_json::Value) -> Result<String, VlmError>
     Ok(text.to_string())
 }
 
+fn resolve_prompt(prompt: Option<&str>, fallback: fn() -> String) -> String {
+    prompt
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(fallback)
+}
+
+fn build_user_prompt(prompt_context: &PromptContext<'_>) -> String {
+    let base_prompt = resolve_prompt(prompt_context.user_prompt, default_user_prompt);
+    let mut context_lines = Vec::new();
+
+    if let Some(app) = prompt_context
+        .app
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        context_lines.push(format!("- アクティブアプリ: {app}"));
+    }
+
+    if let Some(window_title) = prompt_context
+        .window_title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        context_lines.push(format!("- ウィンドウタイトル: {window_title}"));
+    }
+
+    if context_lines.is_empty() {
+        return base_prompt;
+    }
+
+    format!(
+        "{base_prompt}\n\n補助コンテキスト:\n{}\n\n補助コンテキストは参考情報として扱い、画面から確認できる内容を優先してください。",
+        context_lines.join("\n")
+    )
+}
+
 fn should_retry(error: &VlmError) -> bool {
     matches!(
         error,
@@ -160,7 +219,9 @@ mod tests {
         net::TcpListener,
     };
 
-    use super::{describe_screenshot, resize_for_vlm, MAX_IMAGE_HEIGHT, MAX_IMAGE_WIDTH};
+    use super::{
+        describe_screenshot, resize_for_vlm, PromptContext, MAX_IMAGE_HEIGHT, MAX_IMAGE_WIDTH,
+    };
 
     fn test_dir(test_name: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -266,6 +327,12 @@ mod tests {
             &image_path,
             &format!("http://{}:{}", addr.ip(), addr.port()),
             256,
+            PromptContext {
+                app: Some("excel.exe"),
+                window_title: Some("月次決算.xlsx"),
+                system_prompt: None,
+                user_prompt: None,
+            },
         )
         .await
         .expect("description should be generated");
@@ -314,6 +381,12 @@ mod tests {
             &image_path,
             &format!("http://{}:{}", addr.ip(), addr.port()),
             256,
+            PromptContext {
+                app: None,
+                window_title: None,
+                system_prompt: None,
+                user_prompt: None,
+            },
         )
         .await
         .expect("description should succeed after retry");

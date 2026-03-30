@@ -3,6 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import StatusCard from "$lib/components/dashboard/StatusCard.svelte";
+  import { addToast } from "$lib/toast.svelte";
   import type {
     DashboardSnapshot,
     DashboardStat,
@@ -38,7 +39,7 @@
   let recentCaptures = $state<RecentCapture[]>([]);
   let loading = $state(true);
   let actionPending = $state<"recording" | "batch" | null>(null);
-  let message = $state<string | null>(null);
+  let stopConfirmOpen = $state(false);
   let tauriAvailable = $state(false);
 
   const isTauri = () =>
@@ -115,27 +116,56 @@
       return;
     }
 
-    const snapshot = await invoke<DashboardSnapshot>("get_dashboard_snapshot");
-    stats = snapshot.stats;
-    vlmProgress = snapshot.vlm_progress;
-    recentCaptures = snapshot.recent_captures;
-    loading = false;
+    try {
+      const snapshot = await invoke<DashboardSnapshot>("get_dashboard_snapshot");
+      stats = snapshot.stats;
+      vlmProgress = snapshot.vlm_progress;
+      recentCaptures = snapshot.recent_captures;
+    } catch (error) {
+      addToast("error", error instanceof Error ? error.message : String(error));
+    } finally {
+      loading = false;
+    }
   }
 
-  async function toggleRecording() {
+  async function startRecording() {
     if (!isTauri()) return;
 
     actionPending = "recording";
-    message = null;
     try {
-      if (stats.is_recording) {
-        await invoke("stop_recording");
+      const started = await invoke<boolean>("start_recording");
+      if (started) {
+        addToast("success", "記録を開始しました。");
       } else {
-        await invoke("start_recording");
+        addToast("info", "すでに記録中です。");
       }
       await refreshDashboard();
     } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
+      addToast("error", error instanceof Error ? error.message : String(error));
+    } finally {
+      actionPending = null;
+    }
+  }
+
+  function requestStopRecording() {
+    stopConfirmOpen = true;
+  }
+
+  async function confirmStopRecording() {
+    if (!isTauri()) return;
+
+    actionPending = "recording";
+    try {
+      const stopped = await invoke<boolean>("stop_recording");
+      if (stopped) {
+        addToast("success", "記録を停止しました。");
+      } else {
+        addToast("info", "現在は記録中ではありません。");
+      }
+      stopConfirmOpen = false;
+      await refreshDashboard();
+    } catch (error) {
+      addToast("error", error instanceof Error ? error.message : String(error));
     } finally {
       actionPending = null;
     }
@@ -145,14 +175,30 @@
     if (!isTauri()) return;
 
     actionPending = "batch";
-    message = null;
     try {
-      await invoke("run_vlm_batch");
+      const started = await invoke<boolean>("run_vlm_batch");
+      if (started) {
+        addToast("success", "VLM バッチを開始しました。");
+      } else {
+        addToast("info", "VLM バッチはすでに実行中です。");
+      }
       await refreshDashboard();
     } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
+      addToast("error", error instanceof Error ? error.message : String(error));
     } finally {
       actionPending = null;
+    }
+  }
+
+  async function clearLastError() {
+    if (!isTauri() || !stats.last_error) return;
+
+    try {
+      await invoke<boolean>("clear_last_error");
+      stats = { ...stats, last_error: null };
+      addToast("success", "最新エラーをクリアしました。");
+    } catch (error) {
+      addToast("error", error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -161,7 +207,7 @@
     void refreshDashboard();
 
     if (!tauriAvailable) {
-      message = "ブラウザプレビューでは Tauri コマンドを呼び出せません。";
+      addToast("info", "ブラウザプレビューでは Tauri コマンドを呼び出せません。");
       return;
     }
 
@@ -251,7 +297,7 @@
             class={`rounded-full px-5 py-3 text-sm font-semibold text-white transition ${
               stats.is_recording ? "bg-cinnabar-600 hover:bg-cinnabar-500" : "bg-ink-900 hover:bg-ink-700"
             } disabled:cursor-not-allowed disabled:opacity-60`}
-            onclick={toggleRecording}
+            onclick={() => (stats.is_recording ? requestStopRecording() : void startRecording())}
             disabled={!tauriAvailable || actionPending !== null}
           >
             {#if actionPending === "recording"}
@@ -277,12 +323,6 @@
             {/if}
           </button>
         </div>
-
-        {#if message}
-          <div class="rounded-2xl border border-cinnabar-200 bg-cinnabar-50 px-4 py-3 text-sm text-cinnabar-700">
-            {message}
-          </div>
-        {/if}
       </div>
 
       <div class="rounded-[1.75rem] border border-ink-100 bg-ink-900 px-5 py-5 text-white">
@@ -305,7 +345,18 @@
             <p class="mt-2 text-sm font-medium">{formatDateTime(stats.last_capture_at)}</p>
           </div>
           <div class="rounded-2xl bg-white/8 px-4 py-4 sm:col-span-2">
-            <p class="text-xs uppercase tracking-[0.2em] text-white/50">最新エラー</p>
+            <div class="flex items-center justify-between gap-3">
+              <p class="text-xs uppercase tracking-[0.2em] text-white/50">最新エラー</p>
+              {#if stats.last_error}
+                <button
+                  class="rounded-full border border-white/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-white/80 transition hover:bg-white/10"
+                  type="button"
+                  onclick={clearLastError}
+                >
+                  ×
+                </button>
+              {/if}
+            </div>
             <p class="mt-2 text-sm font-medium">{stats.last_error ?? "なし"}</p>
           </div>
         </div>
@@ -417,3 +468,35 @@
     </article>
   </section>
 </section>
+
+{#if stopConfirmOpen}
+  <div class="fixed inset-0 z-40 flex items-center justify-center bg-ink-950/45 px-4">
+    <div class="w-full max-w-md rounded-[1.75rem] border border-white/70 bg-white px-6 py-6 shadow-panel">
+      <p class="text-xs font-semibold uppercase tracking-[0.24em] text-cinnabar-600">Stop Recording</p>
+      <h3 class="mt-3 text-2xl font-bold text-ink-900">記録を停止しますか？</h3>
+      <p class="mt-3 text-sm leading-7 text-ink-500">
+        記録を停止すると新しいキャプチャ取得が中断されます。
+      </p>
+
+      <div class="mt-6 flex justify-end gap-3">
+        <button
+          class="rounded-full border border-ink-200 bg-white px-4 py-2 text-sm font-semibold text-ink-700 transition hover:border-brass-300 hover:text-brass-700"
+          type="button"
+          onclick={() => {
+            stopConfirmOpen = false;
+          }}
+        >
+          キャンセル
+        </button>
+        <button
+          class="rounded-full bg-cinnabar-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cinnabar-500 disabled:cursor-not-allowed disabled:opacity-60"
+          type="button"
+          onclick={confirmStopRecording}
+          disabled={actionPending === "recording"}
+        >
+          停止する
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}

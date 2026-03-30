@@ -15,7 +15,7 @@ use crate::{
     models::VlmBatchProgress,
     state::AppState,
     vlm::{
-        inference::describe_screenshot,
+        inference::{describe_screenshot, PromptContext},
         server::{
             default_thread_count, refresh_vlm_state, resolve_model_paths, update_vlm_state,
             VlmError,
@@ -270,7 +270,8 @@ async fn vlm_batch_loop(
     }
 
     let client = Client::new();
-    let max_tokens = state.config.lock().await.vlm_max_tokens;
+    let config = state.config.lock().await.clone();
+    let max_tokens = config.vlm_max_tokens;
     let server_url = {
         let server = state.vlm_server.lock().await;
         server.server_url()
@@ -320,7 +321,20 @@ async fn vlm_batch_loop(
         };
 
         let started_at = Instant::now();
-        match describe_screenshot(&client, Path::new(&image_path), &server_url, max_tokens).await {
+        match describe_screenshot(
+            &client,
+            Path::new(&image_path),
+            &server_url,
+            max_tokens,
+            PromptContext {
+                app: Some(&record.app),
+                window_title: Some(&record.window_title),
+                system_prompt: Some(&config.system_prompt),
+                user_prompt: Some(&config.user_prompt),
+            },
+        )
+        .await
+        {
             Ok(description) => {
                 let update_result = {
                     let db = state.db.lock().await;

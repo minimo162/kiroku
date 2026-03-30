@@ -32,6 +32,7 @@ jobs:
         shell: pwsh
         env:
           LLAMA_SERVER_SIDECAR_URL: ${{ vars.LLAMA_SERVER_SIDECAR_URL }}
+          LLAMA_SERVER_SIDECAR_SHA256: ${{ vars.LLAMA_SERVER_SIDECAR_SHA256 }}
         run: |
           $binaryDir = "src-tauri/binaries"
           $binaryPath = Join-Path $binaryDir "llama-server-x86_64-pc-windows-msvc.exe"
@@ -63,6 +64,14 @@ jobs:
             throw "Missing llama-server sidecar at $binaryPath. Commit the binary or set the LLAMA_SERVER_SIDECAR_URL repository variable."
           }
 
+          if ($env:LLAMA_SERVER_SIDECAR_SHA256) {
+            $actualHash = (Get-FileHash -Path $binaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $expectedHash = $env:LLAMA_SERVER_SIDECAR_SHA256.ToLowerInvariant()
+            if ($actualHash -ne $expectedHash) {
+              throw "llama-server sidecar SHA256 mismatch. expected=$expectedHash actual=$actualHash"
+            }
+          }
+
       - name: Verify app
         run: |
           npm run check
@@ -70,6 +79,29 @@ jobs:
 
       - name: Build MSI
         run: npm run tauri build
+
+      - name: Sign MSI with Trusted Signing
+        if: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' && vars.TRUSTED_SIGNING_ENDPOINT != '' && vars.TRUSTED_SIGNING_ACCOUNT_NAME != '' && vars.TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME != '' }}
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.TRUSTED_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.TRUSTED_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          files-folder: src-tauri/target/release/bundle/msi
+          files-folder-filter: msi
+
+      - name: Verify MSI signature
+        if: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' && vars.TRUSTED_SIGNING_ENDPOINT != '' && vars.TRUSTED_SIGNING_ACCOUNT_NAME != '' && vars.TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME != '' }}
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem -Path "src-tauri/target/release/bundle/msi" -Filter "*.msi" | Select-Object -First 1
+          if (-not $msi) {
+            throw "MSI artifact not found for signature verification"
+          }
+          signtool verify /pa /v $msi.FullName
 
       - name: Upload MSI artifact
         uses: actions/upload-artifact@v4

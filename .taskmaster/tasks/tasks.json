@@ -271,6 +271,176 @@
         ],
         "status": "done",
         "subtasks": []
+      },
+      {
+        "id": 21,
+        "title": "VLMプロンプトの業務ドメイン最適化",
+        "description": "経理業務（SAP GUI、Excel連結PKG、Outlook、Teams）に特化したVLMシステムプロンプトおよびユーザープロンプトを最適化し、画面記述の精度をPRD目標（修正不要率70%以上）に向上させる。",
+        "details": "1. 現在のプロンプト（`src-tauri/src/vlm/inference.rs`）を確認\n2. SAP GUI、Excel（連結PKG）、Outlook、Teams の各アプリに対して代表的なスクショでの記述品質を評価\n3. 業務ドメイン固有の用語（連結PKG、UPI、内部取引消去等）をシステムプロンプトに追加\n4. 記述形式を「何の業務操作か」が明確に分かる構造に統一\n5. 設定画面からプロンプトのカスタマイズを可能にする（config.jsonに`system_prompt`フィールド追加）\n6. プロンプト変更後の動作確認テスト",
+        "testStrategy": "SAP GUI、Excel、Outlook の各3枚以上のスクショに対してVLM推論を実行し、出力記述が業務操作を正確に表現しているかを手動評価。修正不要率を記録する。",
+        "priority": "high",
+        "dependencies": [
+          9,
+          10
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 22,
+        "title": "llama-server バイナリの自動取得とCI/CD連携",
+        "description": "MSIインストーラーに llama-server.exe を同梱するための自動ダウンロード・検証フローをCI（GitHub Actions）に組み込む。現在は手動で `src-tauri/binaries/` に配置する必要があり、配布ビルドが再現できない。",
+        "details": "1. `src-tauri/binaries/README.md` で示されている `LLAMA_SERVER_SIDECAR_URL` リポジトリ変数を使ったダウンロードロジックをGitHub Actionsワークフローに実装\n2. `.github/workflows/` にビルドワークフロー（build-msi.yml）を作成または更新\n3. 以下のステップを追加:\n   - `LLAMA_SERVER_SIDECAR_URL` からダウンロード（ZIPまたは直接exe）\n   - ZIPの場合は展開して `llama-server.exe` を取り出す\n   - `src-tauri/binaries/llama-server-x86_64-pc-windows-msvc.exe` として配置\n   - SHA256チェックサム検証（チェックサムをリポジトリ変数またはハードコードで管理）\n4. ローカルビルド手順をREADMEに記載\n5. `tauri.conf.json` のexternalBinariesが正しく設定されていることを確認",
+        "testStrategy": "GitHub Actionsのビルドワークフローを実行し、llama-server.exeが自動取得されてMSIに同梱されることを確認。MSIインストール後にllama-serverが起動できることを確認。",
+        "priority": "high",
+        "dependencies": [
+          20
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 23,
+        "title": "履歴・検索画面の実装（F-201）",
+        "description": "過去のキャプチャ記録を日付・アプリ・キーワードで横断検索できる画面を実装する。フェーズ3（チーム展開）の要件。",
+        "details": "1. Rustバックエンドに検索コマンドを追加（`src-tauri/src/lib.rs`）:\n   - `search_captures(query: String, app_filter: Vec<String>, date_from: Option<String>, date_to: Option<String>) -> Vec<CaptureRecord>`\n   - SQLiteのFTSまたはLIKEクエリで `description` と `window_title` を全文検索\n2. `/history` ルートを新規作成（`src/routes/history/+page.svelte`）\n3. UI要素:\n   - キーワード入力フィールド（デバウンス検索）\n   - アプリフィルター（チェックボックス）\n   - 日付範囲ピッカー\n   - 検索結果リスト（タイムスタンプ・アプリ・記述の一覧）\n   - 結果クリックでプレビュー画面に遷移\n4. ナビゲーションに「履歴」リンクを追加\n5. ページネーション（50件/ページ）",
+        "testStrategy": "検索キーワード・アプリフィルター・日付範囲の各条件で検索を実行し、期待通りの結果が返ること。空検索時は全件表示、0件時は適切なメッセージを表示することを確認。",
+        "priority": "medium",
+        "dependencies": [
+          7,
+          13
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 24,
+        "title": "データマスキング機能の実装（F-203）",
+        "description": "CSVエクスポート時に、設定したキーワードパターンを自動置換してマスキングするオプションを実装する。機密情報（取引先名、金額、個人名等）の漏洩リスクを軽減する。",
+        "details": "1. `config.json` に `mask_rules: Vec<{pattern: String, replacement: String}>` フィールドを追加\n2. `src-tauri/src/config.rs` に MaskRule 構造体を追加\n3. `src-tauri/src/export.rs` にマスキング処理を追加:\n   - エクスポート時に各 description と window_title に対して正規表現置換を適用\n   - `replacement` がデフォルト `[MASKED]`\n4. 設定画面（`src/routes/settings/+page.svelte`）にマスキングルール管理UIを追加:\n   - ルールの追加・削除・編集\n   - パターンはリテラル文字列または正規表現\n   - テスト入力で置換プレビュー\n5. エクスポート画面に「マスキング適用」チェックボックスを追加",
+        "testStrategy": "マスキングルールを設定してCSVエクスポートを実行し、指定パターンが置換されていることを確認。正規表現パターンが正しく動作すること、マスキング無効時は元のテキストが出力されることを確認。",
+        "priority": "medium",
+        "dependencies": [
+          11,
+          14
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 25,
+        "title": "ユーザーマニュアルの作成",
+        "description": "非エンジニアの経理担当者がセルフサービスでKirokuを利用開始・運用できるユーザーマニュアルを作成する。フェーズ3チーム展開の前提条件。",
+        "details": "1. `docs/` ディレクトリを作成し、以下のマニュアルを作成:\n   - `docs/user-manual.md`: メインマニュアル（日本語）\n2. マニュアルの構成:\n   - インストール手順（MSIインストーラーの実行からセットアップウィザード完了まで）\n   - 初回セットアップ（モデルダウンロード、動作確認）\n   - 日常操作（起動・停止、トレイ常駐、ホットキー）\n   - CSVエクスポートの手順\n   - Copilot Excelへの入力手順（PRD § 10.2のプロンプト含む）\n   - よくあるトラブルと対処法\n   - アンインストール手順\n3. スクリーンショット付きで分かりやすく記述\n4. IT部門向けの展開手順（サイレントインストール等）も付録として追加",
+        "testStrategy": "マニュアルに従って非エンジニアが実際にインストールから初回エクスポートまでを完了できることをユーザーテストで確認。不明点・詰まりポイントをフィードバックとして収集し反映。",
+        "priority": "medium",
+        "dependencies": [
+          18,
+          20
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 26,
+        "title": "Windows コード署名の設定（Trusted Signing）",
+        "description": "チーム展開（フェーズ3）に向けて、MSIインストーラーにコード署名を施す。署名なしの場合、Windows SmartScreen による警告が表示され、IT部門のポリシーでインストールがブロックされる可能性がある。",
+        "details": "**選択肢:**\n\nA. Azure Trusted Signing（推奨）\n- Microsoft の新しいコード署名サービス（月額約10ドル）\n- OV証明書不要、Azure AD テナントで管理\n- GitHub Actions との公式インテグレーションあり\n- 手順:\n  1. Azure ポータルで Trusted Signing アカウントを作成\n  2. 証明書プロファイルを作成（Public Trust / Private Trust）\n  3. `azure/trusted-signing-action@v0` を release.yml に追加\n  4. Tauri の `beforeBuildCommand` または GitHub Actions の MSI ビルド後ステップに署名を組み込む\n\nB. 自己署名証明書 + グループポリシー配布（IT部門経由）\n- 証明書費用ゼロ\n- IT部門が信頼ストアに証明書を配布できる場合のみ有効\n- SmartScreen は回避できない\n\n**実装ステップ（案A）:**\n1. `release.yml` に署名ステップを追加:\n   ```yaml\n   - name: Sign MSI\n     uses: azure/trusted-signing-action@v0\n     with:\n       azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}\n       azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}\n       azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}\n       endpoint: https://XXX.codesigning.azure.net/\n       trusted-signing-account-name: kiroku-signing\n       certificate-profile-name: kiroku\n       files-folder: src-tauri/target/release/bundle/msi\n       files-folder-filter: msi\n   ```\n2. GitHub Secrets に Azure 認証情報を設定\n3. 署名済みMSIでSmartScreenが警告を出さないことを確認",
+        "testStrategy": "署名済みMSIを Windows 11 の標準ユーザーアカウントで実行し、SmartScreen 警告なしにインストールが完了することを確認。`signtool verify /pa /v kiroku.msi` で署名の有効性を検証。",
+        "priority": "medium",
+        "dependencies": [
+          20,
+          22
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 27,
+        "title": "グローバルトースト通知システムの実装（UX-001）",
+        "description": "各画面の個別インライン message 表示を廃止し、+layout.svelte でグローバルトーストを管理する。成功3秒自動消去・エラーは手動クリアの2モードを持つ。",
+        "details": "1. `src/lib/toast.svelte.ts` を作成:\n   - `type Toast = { id: number; type: 'success' | 'error' | 'info'; message: string }`\n   - `toasts = $state<Toast[]>([])` でグローバルストア\n   - `addToast(type, message)` / `removeToast(id)` をエクスポート\n   - success は3秒後に自動 `removeToast`\n2. `src/lib/components/ToastContainer.svelte` を作成:\n   - 画面右下に固定表示 (`fixed bottom-4 right-4`)\n   - トーストカードのアニメーション (fly transition)\n   - 成功: brass-50 背景, エラー: cinnabar-50 背景, 情報: ink-50 背景\n   - ✕ボタンで手動クリア\n3. `+layout.svelte` に `<ToastContainer />` を追加\n4. 各ページ (dashboard, settings, preview, export, history) の `message` state と条件レンダリングを `addToast()` 呼び出しに置き換え",
+        "testStrategy": "各画面で成功操作・失敗操作を実行し、トーストが正しい色で右下に表示され、成功は3秒で消えること、エラーはクリックで消えることを確認。複数トーストが重なった場合に縦並びになることを確認。",
+        "priority": "high",
+        "dependencies": [
+          13,
+          14,
+          15,
+          16,
+          23
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 28,
+        "title": "日付範囲バリデーションの追加（UX-002）",
+        "description": "エクスポート画面・履歴画面の開始日/終了日フィールドで、開始日 > 終了日となる入力をフロントエンドで弾き、実行ボタンを無効化する。",
+        "details": "1. `src/routes/export/+page.svelte`:\n   - `dateRangeError = $derived(filter.date_from && filter.date_to && filter.date_from > filter.date_to ? '開始日は終了日以前にしてください' : null)`\n   - 日付フィールドの下に `{#if dateRangeError}<p class=\"text-cinnabar-700 text-sm\">{dateRangeError}</p>{/if}` を追加\n   - エクスポートボタンに `|| !!dateRangeError` の disabled 条件を追加\n2. `src/routes/history/+page.svelte` にも同様のバリデーションを追加",
+        "testStrategy": "開始日を終了日より後に設定したとき、フィールド下に警告テキストが出てエクスポートボタンが無効になることを確認。日付を正しい順序に戻したら警告が消えてボタンが有効になることを確認。",
+        "priority": "medium",
+        "dependencies": [
+          16,
+          23
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 29,
+        "title": "記録停止の確認ダイアログ（UX-003）とエラー状態リセット（UX-004）",
+        "description": "ダッシュボードの記録停止ボタンに確認ステップを追加し、最新エラー表示にクリアボタンを追加する。",
+        "details": "**UX-003 停止確認:**\n1. `dashboard/+page.svelte` に `stopConfirmOpen = $state(false)` を追加\n2. 停止ボタン押下 → `stopConfirmOpen = true` に変更\n3. 確認モーダル（`<dialog>` または div）を追加:\n   - メッセージ: 「記録を停止しますか？キャプチャが中断されます。」\n   - 「停止する」ボタン (cinnabar) → 実際の `stop_recording` 呼び出し\n   - 「キャンセル」ボタン → `stopConfirmOpen = false`\n\n**UX-004 エラークリア:**\n1. Rust側 `src-tauri/src/lib.rs` に `#[tauri::command] fn clear_last_error(state: ...)` を追加\n   - AppState の `last_error` フィールドを None/空文字列にセット\n2. ダッシュボードの最新エラー表示横に「✕」ボタンを追加\n3. ボタン押下で `clear_last_error` を呼び出し、ローカルの `stats.last_error` も空文字列にリセット",
+        "testStrategy": "停止ボタン押下時にモーダルが開くこと、キャンセルで記録が継続すること、確認後に停止されることを確認。エラー表示後、✕ボタンでエラーが消えることを確認。",
+        "priority": "medium",
+        "dependencies": [
+          13
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 30,
+        "title": "設定画面のリアルタイムバリデーション（UX-005）と Ctrl+S 保存（UX-006）",
+        "description": "設定画面の入力フィールドに onblur バリデーションを追加し、エラーがある間は保存ボタンを無効化。Ctrl+S でも保存できるようにする。",
+        "details": "**UX-005 バリデーション:**\n1. `settings/+page.svelte` にバリデーション関数を追加:\n   ```ts\n   function validateVlmHost(v: string) {\n     return /^[^:\\s]+:\\d+$/.test(v) ? null : 'host:port 形式で入力してください';\n   }\n   function validateMaxTokens(v: number) {\n     return v >= 64 && v <= 2048 ? null : '64〜2048 の範囲で入力してください';\n   }\n   ```\n2. 各フィールドの `onblur` でバリデーション実行、エラーをフィールド直下の `<p class=\"text-cinnabar-700 text-sm\">` に表示\n3. `hasErrors = $derived(...)` で全エラーの有無を集約し、保存ボタンの disabled 条件に追加\n\n**UX-006 Ctrl+S:**\n1. `onMount` 内で `window.addEventListener('keydown', handleKeyDown)` を登録\n2. `handleKeyDown`: `e.ctrlKey && e.key === 's'` の場合 `e.preventDefault()` してから `saveConfig()` を呼び出す\n3. `onDestroy` でリスナーを解除",
+        "testStrategy": "無効な VLM ホスト・トークン数を入力してフォーカスを外したとき、フィールド直下にエラーが表示され保存ボタンが無効化されることを確認。Ctrl+S でトーストが出ながら保存されることを確認。",
+        "priority": "medium",
+        "dependencies": [
+          14,
+          27
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 31,
+        "title": "プレビュー画面の UX 改善（UX-007/008）: 元の記述に戻すと Ctrl+S",
+        "description": "記述エディタに「元の記述（VLM生成値）に戻す」ボタンと Ctrl+S 保存ショートカットを追加する。",
+        "details": "**UX-007 元の記述に戻す:**\n1. `preview/+page.svelte` の record 選択時、`originalDescription = record.description` を保持\n2. 編集履歴が存在する場合のみ表示される「元の記述に戻す」ボタン（outline, small）をテキストエリア右上に追加\n3. 押下時 → `editedDescription = originalDescription`（テキストエリアを更新）し、自動で `saveDescription()` を呼び出す\n4. トーストで「VLMの元の記述に戻しました」を表示（UX-001実装後はtoastを使用）\n\n**UX-008 Ctrl+S:**\n1. テキストエリアの `onkeydown` ハンドラを追加:\n   ```svelte\n   onkeydown={(e) => { if (e.ctrlKey && e.key === 's') { e.preventDefault(); saveDescription(); } }}\n   ```\n2. テキストエリアのヒントテキスト（プレースホルダーまたは下部説明）に「Ctrl+S で保存」を追記",
+        "testStrategy": "VLM生成記述を手動編集後、「元に戻す」ボタンが表示され押下で元の記述に戻ることを確認。Ctrl+S でテキストエリアにフォーカス中に保存が実行されることを確認。",
+        "priority": "medium",
+        "dependencies": [
+          15,
+          27
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 32,
+        "title": "エクスポート・履歴画面のフィルター UX 改善（UX-009/011/012）",
+        "description": "アプリ一括選択/解除ボタン（UX-009）、履歴検索のキーワードハイライト（UX-011）、履歴フィルター一括リセット（UX-012）を実装する。",
+        "details": "**UX-009 アプリ一括選択/解除（export & history 両画面）:**\n```svelte\n<button onclick={() => filter.apps = allApps.map(a => a.name)}>全選択</button>\n<button onclick={() => filter.apps = []}>全解除</button>\n```\nアプリフィルター見出しの右横に brass-700 text-sm で追加。\n\n**UX-011 キーワードハイライト（history 画面）:**\n1. `highlightText(text: string, query: string): string` 関数を `src/lib/highlight.ts` に実装:\n   - query が空なら text をそのまま返す\n   - 正規表現でマッチ箇所を `<mark class=\"bg-brass-200 rounded px-0.5\">` で囲む\n   - XSS対策: text を先にエスケープしてから置換\n2. 履歴結果カードの `window_title` と `description` の表示を `{@html highlightText(...)}` に変更\n\n**UX-012 フィルター一括リセット（history 画面）:**\n1. フィルターパネル上部に「フィルターをリセット」ボタンを追加\n2. 押下で `query = ''`, `dateFrom = ''`, `dateTo = ''`, `selectedApps = []` を設定し `scheduleSearch()` を呼び出す\n3. フィルターが全て初期値の場合はボタンを非表示（`$derived` で判定）",
+        "testStrategy": "エクスポート・履歴画面でアプリ全選択/全解除が機能すること。履歴検索でキーワード入力時に一致箇所が黄色くハイライトされること（XSSに脆弱でないこと）。リセットボタンで全フィルターがクリアされ再検索されることを確認。",
+        "priority": "medium",
+        "dependencies": [
+          16,
+          23,
+          27
+        ],
+        "status": "done",
+        "subtasks": []
       }
     ],
     "metadata": {

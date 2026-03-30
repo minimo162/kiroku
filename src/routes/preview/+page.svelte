@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+  import { addToast } from "$lib/toast.svelte";
   import type {
     DescriptionHistoryRecord,
     PreviewCaptureRecord,
@@ -19,11 +20,11 @@
   let preview = $state<PreviewPagePayload>({ ...emptyPage });
   let selectedId = $state<string | null>(null);
   let editingDescription = $state("");
+  let originalDescription = $state("");
   let history = $state<DescriptionHistoryRecord[]>([]);
   let loading = $state(true);
   let saving = $state(false);
   let historyLoading = $state(false);
-  let message = $state<string | null>(null);
   let tauriAvailable = $state(false);
   let selectedDateInput = $state("");
 
@@ -49,6 +50,8 @@
   const selectedRecord = () =>
     preview.records.find((record) => record.id === selectedId) ?? null;
 
+  const canRestoreOriginal = () => history.length > 0;
+
   const previewImageUrl = (record: PreviewCaptureRecord | null) => {
     if (!tauriAvailable || !record?.image_exists || !record.image_path) {
       return null;
@@ -57,14 +60,24 @@
     return convertFileSrc(record.image_path);
   };
 
+  function resolveOriginalDescription(
+    record: PreviewCaptureRecord,
+    nextHistory: DescriptionHistoryRecord[]
+  ) {
+    const oldestEntry = nextHistory[nextHistory.length - 1];
+    return oldestEntry?.previous_description ?? record.description ?? "";
+  }
+
   async function loadHistory(captureId: string) {
     if (!isTauri()) return;
 
     historyLoading = true;
     try {
-      history = await invoke<DescriptionHistoryRecord[]>("get_capture_description_history", {
+      const nextHistory = await invoke<DescriptionHistoryRecord[]>("get_capture_description_history", {
         captureId
       });
+      history = nextHistory;
+      return nextHistory;
     } finally {
       historyLoading = false;
     }
@@ -73,7 +86,8 @@
   async function selectRecord(record: PreviewCaptureRecord) {
     selectedId = record.id;
     editingDescription = record.description ?? "";
-    await loadHistory(record.id);
+    const nextHistory = (await loadHistory(record.id)) ?? [];
+    originalDescription = resolveOriginalDescription(record, nextHistory);
   }
 
   async function loadPage(date?: string | null, page = 1) {
@@ -83,7 +97,6 @@
     }
 
     loading = true;
-    message = null;
     try {
       preview = await invoke<PreviewPagePayload>("get_capture_preview_page", {
         date: date ?? null,
@@ -94,6 +107,7 @@
       if (preview.records.length === 0) {
         selectedId = null;
         editingDescription = "";
+        originalDescription = "";
         history = [];
         return;
       }
@@ -102,17 +116,16 @@
         preview.records.find((record) => record.id === selectedId) ?? preview.records[0];
       await selectRecord(nextSelected);
     } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
+      addToast("error", error instanceof Error ? error.message : String(error));
     } finally {
       loading = false;
     }
   }
 
-  async function saveDescription() {
+  async function saveDescription(successMessage = "記述を保存しました。") {
     if (!isTauri() || !selectedId) return;
 
     saving = true;
-    message = null;
     try {
       const updated = await invoke<PreviewCaptureRecord>("update_capture_description", {
         captureId: selectedId,
@@ -123,21 +136,39 @@
         records: preview.records.map((record) => (record.id === updated.id ? updated : record))
       };
       editingDescription = updated.description ?? "";
-      message = "記述を保存しました。";
-      await loadHistory(selectedId);
+      const nextHistory = (await loadHistory(selectedId)) ?? [];
+      originalDescription = resolveOriginalDescription(updated, nextHistory);
+      addToast("success", successMessage);
     } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
+      addToast("error", error instanceof Error ? error.message : String(error));
     } finally {
       saving = false;
     }
   }
 
+  async function restoreOriginalDescription() {
+    if (!canRestoreOriginal()) return;
+
+    editingDescription = originalDescription;
+    await saveDescription("VLM の元の記述に戻しました。");
+  }
+
+  function handleEditorKeydown(event: KeyboardEvent) {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      void saveDescription();
+    }
+  }
+
   onMount(() => {
     tauriAvailable = isTauri();
-    void loadPage();
+    const initialDate = typeof window !== "undefined"
+      ? new URL(window.location.href).searchParams.get("date")
+      : null;
+    void loadPage(initialDate);
 
     if (!tauriAvailable) {
-      message = "ブラウザプレビューでは記述の取得や保存を実行できません。";
+      addToast("info", "ブラウザプレビューでは記述の取得や保存を実行できません。");
     }
   });
 </script>
@@ -319,26 +350,34 @@
                 <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">Description</p>
                 <h3 class="mt-2 text-2xl font-bold text-ink-900">記述の編集</h3>
               </div>
-              <button
-                class="rounded-full bg-ink-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-60"
-                onclick={saveDescription}
-                disabled={!tauriAvailable || saving}
-              >
-                {saving ? "保存中..." : "保存"}
-              </button>
+              <div class="flex flex-wrap items-center justify-end gap-2">
+                {#if canRestoreOriginal()}
+                  <button
+                    class="rounded-full border border-ink-200 bg-white px-4 py-2 text-sm font-semibold text-ink-700 transition hover:border-brass-300 hover:text-brass-700"
+                    type="button"
+                    onclick={() => void restoreOriginalDescription()}
+                    disabled={!tauriAvailable || saving}
+                  >
+                    元の記述に戻す
+                  </button>
+                {/if}
+                <button
+                  class="rounded-full bg-ink-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  onclick={() => void saveDescription()}
+                  disabled={!tauriAvailable || saving}
+                >
+                  {saving ? "保存中..." : "保存"}
+                </button>
+              </div>
             </div>
 
             <textarea
               class="min-h-[220px] w-full rounded-[1.5rem] border border-ink-100 bg-white px-4 py-4 text-sm leading-7 text-ink-700 outline-none transition focus:border-brass-300"
               bind:value={editingDescription}
               placeholder="この画面で行っている作業を編集します"
+              onkeydown={handleEditorKeydown}
             ></textarea>
-
-            {#if message}
-              <div class="rounded-[1.25rem] border border-brass-100 bg-brass-50 px-4 py-3 text-sm text-brass-800">
-                {message}
-              </div>
-            {/if}
+            <p class="text-sm text-ink-500">エディタにフォーカスした状態で `Ctrl+S` を押すと保存できます。</p>
 
             <div class="rounded-[1.5rem] border border-ink-100 bg-ink-50/70 px-4 py-4">
               <div class="flex items-center justify-between gap-3">
