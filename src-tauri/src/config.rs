@@ -9,19 +9,23 @@ use thiserror::Error;
 use crate::models::AppConfig;
 
 pub const CONFIG_FILE_NAME: &str = "config.json";
+pub const DB_FILE_NAME: &str = "kiroku.db";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppPaths {
     pub data_dir: PathBuf,
     pub config_path: PathBuf,
+    pub db_path: PathBuf,
 }
 
 impl AppPaths {
     pub fn new(data_dir: PathBuf) -> Self {
         let config_path = data_dir.join(CONFIG_FILE_NAME);
+        let db_path = data_dir.join(DB_FILE_NAME);
         Self {
             data_dir,
             config_path,
+            db_path,
         }
     }
 }

@@ -11,7 +11,7 @@ use thiserror::Error;
 use uuid::Uuid;
 use xcap::Monitor;
 
-use crate::{models::CaptureRecord, state::AppState};
+use crate::{db::insert_capture, models::CaptureRecord, state::AppState};
 
 const CAPTURE_DIR_NAME: &str = "captures";
 
@@ -130,6 +130,11 @@ pub async fn capture_now(state: State<'_, AppState>) -> Result<CaptureRecord, St
     let frame = capture_primary_monitor(&output_dir)
         .await
         .map_err(|err| err.to_string())?;
+
+    {
+        let db = state.db.lock().await;
+        insert_capture(&db, &frame.record).map_err(|err| err.to_string())?;
+    }
 
     {
         let mut stats = state.capture_stats.lock().await;

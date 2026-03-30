@@ -9,6 +9,7 @@ use crate::{
         capture_output_dir, capture_primary_monitor, persist_capture_metadata,
         remove_capture_artifacts,
     },
+    db::insert_capture,
     diff::{compute_dhash, has_significant_change},
     models::CaptureRecord,
     state::AppState,
@@ -141,6 +142,11 @@ async fn capture_and_process_frame(app: &AppHandle, state: &AppState) -> Result<
     let metadata = get_active_window_metadata().unwrap_or_else(|_| WindowMetadata::unknown(0));
     let record = enrich_record(frame.record, metadata, hash);
     persist_capture_metadata(&record, &image_path).map_err(|err| err.to_string())?;
+
+    {
+        let db = state.db.lock().await;
+        insert_capture(&db, &record).map_err(|err| err.to_string())?;
+    }
 
     {
         let mut stats = state.capture_stats.lock().await;
