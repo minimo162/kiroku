@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use tauri::{Manager, Runtime};
 use tokio::{
@@ -78,5 +78,10 @@ impl AppState {
 
     pub fn shutdown_vlm_server_blocking(&self) {
         tauri::async_runtime::block_on(self.shutdown_vlm_server());
+    }
+
+    pub async fn capture_base_dir(&self) -> PathBuf {
+        let config = self.config.lock().await;
+        PathBuf::from(&config.data_dir)
     }
 }

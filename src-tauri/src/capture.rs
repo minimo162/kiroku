@@ -125,8 +125,8 @@ pub fn remove_capture_artifacts(image_path: &Path) -> Result<(), CaptureError> {
 
 #[tauri::command]
 pub async fn capture_now(state: State<'_, AppState>) -> Result<CaptureRecord, String> {
-    let output_dir =
-        capture_output_dir(&state.app_paths.data_dir).map_err(|err| err.to_string())?;
+    let base_dir = state.capture_base_dir().await;
+    let output_dir = capture_output_dir(&base_dir).map_err(|err| err.to_string())?;
     let frame = capture_primary_monitor(&output_dir)
         .await
         .map_err(|err| err.to_string())?;

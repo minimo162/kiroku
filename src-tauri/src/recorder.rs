@@ -130,8 +130,8 @@ pub async fn stop_recording(app: AppHandle, state: State<'_, AppState>) -> Resul
 }
 
 async fn capture_and_process_frame(app: &AppHandle, state: &AppState) -> Result<(), String> {
-    let output_dir =
-        capture_output_dir(&state.app_paths.data_dir).map_err(|err| err.to_string())?;
+    let base_dir = state.capture_base_dir().await;
+    let output_dir = capture_output_dir(&base_dir).map_err(|err| err.to_string())?;
     let frame = capture_primary_monitor(&output_dir)
         .await
         .map_err(|err| err.to_string())?;

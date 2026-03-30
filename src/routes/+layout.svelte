@@ -4,7 +4,7 @@
 
   const navItems = [
     { href: "/dashboard", label: "ダッシュボード", status: "live" },
-    { href: "/settings", label: "設定", status: "soon" },
+    { href: "/settings", label: "設定", status: "live" },
     { href: "/preview", label: "記述プレビュー", status: "soon" },
     { href: "/export", label: "エクスポート", status: "soon" }
   ];

@@ -14,6 +14,7 @@ pub mod window_meta;
 use tauri::Manager;
 
 use capture::capture_now;
+use config::{get_config, save_config_command, select_data_dir, test_vlm_connection};
 use dashboard::{get_dashboard_snapshot, get_recent_captures_command, get_stats};
 use export::{export_csv, preview_csv_export};
 use recorder::{start_recording, stop_recording};
@@ -88,6 +89,10 @@ pub fn run() {
             get_stats,
             get_recent_captures_command,
             get_dashboard_snapshot,
+            get_config,
+            save_config_command,
+            select_data_dir,
+            test_vlm_connection,
             preview_csv_export,
             export_csv
         ])
