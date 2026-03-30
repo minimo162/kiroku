@@ -6,6 +6,7 @@
     capture_interval_secs: number;
     dhash_threshold: number;
     auto_delete_images: boolean;
+    scheduler_enabled: boolean;
     batch_time: string;
     vlm_host: string;
     vlm_max_tokens: number;
@@ -16,6 +17,7 @@
     capture_interval_secs: 30,
     dhash_threshold: 10,
     auto_delete_images: true,
+    scheduler_enabled: true,
     batch_time: "22:00",
     vlm_host: "127.0.0.1:8080",
     vlm_max_tokens: 256,
@@ -123,6 +125,7 @@
         <div class="mt-4 space-y-3 text-sm leading-6 text-white/80">
           <p>キャプチャ間隔は 10 秒から 300 秒の範囲で調整できます。</p>
           <p>差分閾値を上げるほど、近い画面変化をスキップしやすくなります。</p>
+          <p>夜間バッチを有効にすると、指定時刻に未処理フレームを自動処理します。</p>
           <p>保存先ディレクトリはキャプチャ画像と sidecar JSON の出力先です。</p>
         </div>
       </div>
@@ -183,13 +186,24 @@
           <input class="h-5 w-5 accent-brass-600" type="checkbox" bind:checked={config.auto_delete_images} />
         </label>
 
+        <label class="flex items-center justify-between rounded-2xl border border-ink-100 px-4 py-4">
+          <div>
+            <p class="text-sm font-medium text-ink-700">夜間バッチを有効化</p>
+            <p class="mt-1 text-sm text-ink-500">
+              指定時刻になると、未処理の記録を自動で VLM バッチ処理します。
+            </p>
+          </div>
+          <input class="h-5 w-5 accent-brass-600" type="checkbox" bind:checked={config.scheduler_enabled} />
+        </label>
+
         <div>
           <label class="text-sm font-medium text-ink-700" for="batch-time">バッチ開始時刻</label>
           <input
             id="batch-time"
-            class="mt-3 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300"
+            class="mt-3 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300 disabled:cursor-not-allowed disabled:opacity-50"
             type="time"
             bind:value={config.batch_time}
+            disabled={!config.scheduler_enabled}
           />
         </div>
       </div>

@@ -127,6 +127,7 @@ pub async fn save_config_command(
         let mut current = state.config.lock().await;
         *current = next_config.clone();
     }
+    let _ = state.config_tx.send(next_config.clone());
 
     {
         let mut server = state.vlm_server.lock().await;
@@ -243,6 +244,7 @@ mod tests {
   "capture_interval_secs": 30,
   "dhash_threshold": 10,
   "auto_delete_images": true,
+  "scheduler_enabled": true,
   "batch_time": "22:00",
   "vlm_host": "127.0.0.1:8080",
   "vlm_max_tokens": 256,

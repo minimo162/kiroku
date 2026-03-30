@@ -3,6 +3,7 @@ use std::{path::Path, time::Instant};
 use reqwest::Client;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
+use tauri_plugin_notification::NotificationExt;
 use tokio::{
     sync::watch,
     time::{sleep, Duration},
@@ -15,7 +16,10 @@ use crate::{
     state::AppState,
     vlm::{
         inference::describe_screenshot,
-        server::{default_thread_count, refresh_vlm_state, update_vlm_state, VlmError},
+        server::{
+            default_thread_count, refresh_vlm_state, resolve_model_paths, update_vlm_state,
+            VlmError,
+        },
     },
 };
 
@@ -25,6 +29,19 @@ struct BatchOptions {
     model_path: Option<String>,
     mmproj_path: Option<String>,
     n_threads: usize,
+    stop_server_when_done: bool,
+    notify_on_completion: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RunBatchRequest {
+    pub auto_delete: Option<bool>,
+    pub model_path: Option<String>,
+    pub mmproj_path: Option<String>,
+    pub n_threads: Option<usize>,
+    pub max_concurrency: Option<usize>,
+    pub stop_server_when_done: bool,
+    pub notify_on_completion: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,6 +62,27 @@ pub async fn run_vlm_batch(
     n_threads: Option<usize>,
     max_concurrency: Option<usize>,
 ) -> Result<bool, String> {
+    run_vlm_batch_inner(
+        app,
+        state.inner().clone(),
+        RunBatchRequest {
+            auto_delete,
+            model_path,
+            mmproj_path,
+            n_threads,
+            max_concurrency,
+            stop_server_when_done: false,
+            notify_on_completion: false,
+        },
+    )
+    .await
+}
+
+pub async fn run_vlm_batch_inner(
+    app: AppHandle,
+    state: AppState,
+    request: RunBatchRequest,
+) -> Result<bool, String> {
     {
         let vlm_state = state.vlm_state.lock().await;
         if vlm_state.batch_running {
@@ -52,15 +90,27 @@ pub async fn run_vlm_batch(
         }
     }
 
-    let auto_delete = match auto_delete {
+    let auto_delete = match request.auto_delete {
         Some(value) => value,
         None => state.config.lock().await.auto_delete_images,
     };
-    let requested_concurrency = max_concurrency.unwrap_or(1).max(1);
+    let requested_concurrency = request.max_concurrency.unwrap_or(1).max(1);
     if requested_concurrency > 1 {
         eprintln!(
             "requested batch concurrency {requested_concurrency}, but Kiroku currently runs a single inference worker"
         );
+    }
+
+    let mut model_path = request.model_path;
+    let mut mmproj_path = request.mmproj_path;
+    let server_running = { state.vlm_state.lock().await.server_running };
+    if !server_running && (model_path.is_none() || mmproj_path.is_none()) {
+        if let Some((resolved_model_path, resolved_mmproj_path)) =
+            resolve_model_paths(&state.app_paths)
+        {
+            model_path.get_or_insert_with(|| resolved_model_path.to_string_lossy().into_owned());
+            mmproj_path.get_or_insert_with(|| resolved_mmproj_path.to_string_lossy().into_owned());
+        }
     }
 
     let (cancel_tx, cancel_rx) = watch::channel(false);
@@ -75,16 +125,18 @@ pub async fn run_vlm_batch(
         *pause_signal = Some(pause_tx);
     }
 
-    let snapshot = update_vlm_state(state.inner(), None, Some(true), None).await;
+    let snapshot = update_vlm_state(&state, None, Some(true), None).await;
     let _ = app.emit("vlm-status", &snapshot);
 
     let options = BatchOptions {
         auto_delete,
         model_path,
         mmproj_path,
-        n_threads: n_threads.unwrap_or_else(default_thread_count),
+        n_threads: request.n_threads.unwrap_or_else(default_thread_count),
+        stop_server_when_done: request.stop_server_when_done,
+        notify_on_completion: request.notify_on_completion,
     };
-    let batch_state = state.inner().clone();
+    let batch_state = state.clone();
     let batch_app = app.clone();
     let task = tokio::spawn(async move {
         vlm_batch_loop(batch_app, batch_state, cancel_rx, pause_rx, options).await;
@@ -160,6 +212,7 @@ async fn vlm_batch_loop(
                 cancelled: false,
             },
             Some(error.to_string()),
+            &options,
         )
         .await;
         return;
@@ -182,6 +235,7 @@ async fn vlm_batch_loop(
                     cancelled: false,
                 },
                 Some(error.to_string()),
+                &options,
             )
             .await;
             return;
@@ -209,6 +263,7 @@ async fn vlm_batch_loop(
                 cancelled: false,
             },
             None,
+            &options,
         )
         .await;
         return;
@@ -241,6 +296,7 @@ async fn vlm_batch_loop(
                     cancelled: true,
                 },
                 Some(error.to_string()),
+                &options,
             )
             .await;
             return;
@@ -301,7 +357,7 @@ async fn vlm_batch_loop(
         cancelled,
     };
 
-    finish_batch(&app, &state, result, None).await;
+    finish_batch(&app, &state, result, None, &options).await;
 }
 
 async fn ensure_vlm_server_running(
@@ -339,9 +395,26 @@ async fn finish_batch(
     state: &AppState,
     result: BatchResult,
     last_error: Option<String>,
+    options: &BatchOptions,
 ) {
     clear_batch_controls(state).await;
-    let snapshot = update_vlm_state(state, None, Some(false), last_error).await;
+    let stop_error = if options.stop_server_when_done {
+        let result = {
+            let mut server = state.vlm_server.lock().await;
+            server.stop()
+        };
+        result.err().map(|error| error.to_string())
+    } else {
+        None
+    };
+    let last_error = last_error.or(stop_error);
+    let snapshot = update_vlm_state(
+        state,
+        options.stop_server_when_done.then_some(false),
+        Some(false),
+        last_error.clone(),
+    )
+    .await;
     let _ = app.emit("vlm-status", &snapshot);
     emit_progress(
         app,
@@ -356,6 +429,29 @@ async fn finish_batch(
     )
     .await;
     let _ = app.emit("vlm-batch-complete", &result);
+
+    if options.notify_on_completion {
+        let body = if let Some(error) = last_error {
+            format!("夜間バッチの完了時にエラーが発生しました: {error}")
+        } else if result.cancelled {
+            format!(
+                "夜間バッチを中断しました。完了 {} 件 / 失敗 {} 件",
+                result.completed, result.failed
+            )
+        } else {
+            format!(
+                "夜間バッチが完了しました。完了 {} 件 / 失敗 {} 件",
+                result.completed, result.failed
+            )
+        };
+
+        let _ = app
+            .notification()
+            .builder()
+            .title("Kiroku バッチ処理")
+            .body(&body)
+            .show();
+    }
 }
 
 async fn clear_batch_controls(state: &AppState) {

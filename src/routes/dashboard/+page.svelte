@@ -16,9 +16,11 @@
     effective_captures: 0,
     skipped_captures: 0,
     vlm_processed: 0,
+    scheduler_enabled: true,
     is_recording: false,
     server_running: false,
     batch_running: false,
+    next_batch_run_at: null,
     last_capture_at: null,
     last_error: null
   };
@@ -53,6 +55,11 @@
       hour: "2-digit",
       minute: "2-digit"
     }).format(date);
+  };
+
+  const formatSchedule = (value: string | null) => {
+    if (!value) return "無効";
+    return formatDateTime(value);
   };
 
   const formatDuration = (value: number | null) => {
@@ -92,8 +99,12 @@
       detail: stats.server_running
         ? stats.batch_running
           ? "バッチ処理が進行中です"
-          : "サーバー起動済み。実行待ちです"
-        : "VLM サーバー停止中です",
+          : stats.scheduler_enabled
+            ? `次回 ${formatSchedule(stats.next_batch_run_at)}`
+            : "手動実行モードです"
+        : stats.scheduler_enabled
+          ? `次回 ${formatSchedule(stats.next_batch_run_at)}`
+          : "VLM サーバー停止中です",
       tone: "brass"
     }
   ];
@@ -183,13 +194,25 @@
           await refreshDashboard();
         }
       });
+      const schedulerStatusUnlisten = await listen("scheduler-status", async () => {
+        if (!disposed) {
+          await refreshDashboard();
+        }
+      });
+      const configUpdatedUnlisten = await listen("config-updated", async () => {
+        if (!disposed) {
+          await refreshDashboard();
+        }
+      });
 
       unlisteners.push(
         captureUnlisten,
         recordingUnlisten,
         vlmProgressUnlisten,
         vlmStatusUnlisten,
-        batchCompleteUnlisten
+        batchCompleteUnlisten,
+        schedulerStatusUnlisten,
+        configUpdatedUnlisten
       );
     };
 
@@ -243,7 +266,7 @@
           <button
             class="rounded-full border border-ink-200 bg-white px-5 py-3 text-sm font-semibold text-ink-700 transition hover:border-brass-300 hover:text-brass-700 disabled:cursor-not-allowed disabled:opacity-60"
             onclick={runBatch}
-            disabled={!tauriAvailable || !stats.server_running || actionPending !== null || stats.batch_running}
+            disabled={!tauriAvailable || actionPending !== null || stats.batch_running}
           >
             {#if actionPending === "batch"}
               実行中...
@@ -274,10 +297,14 @@
             <p class="mt-2 text-lg font-semibold">{stats.server_running ? "起動中" : "停止中"}</p>
           </div>
           <div class="rounded-2xl bg-white/8 px-4 py-4">
+            <p class="text-xs uppercase tracking-[0.2em] text-white/50">次回バッチ</p>
+            <p class="mt-2 text-sm font-medium">{formatSchedule(stats.next_batch_run_at)}</p>
+          </div>
+          <div class="rounded-2xl bg-white/8 px-4 py-4">
             <p class="text-xs uppercase tracking-[0.2em] text-white/50">最終キャプチャ</p>
             <p class="mt-2 text-sm font-medium">{formatDateTime(stats.last_capture_at)}</p>
           </div>
-          <div class="rounded-2xl bg-white/8 px-4 py-4">
+          <div class="rounded-2xl bg-white/8 px-4 py-4 sm:col-span-2">
             <p class="text-xs uppercase tracking-[0.2em] text-white/50">最新エラー</p>
             <p class="mt-2 text-sm font-medium">{stats.last_error ?? "なし"}</p>
           </div>
@@ -331,6 +358,8 @@
           現在処理中: <span class="font-medium text-ink-700">{vlmProgress.current_id}</span>
         {:else if stats.batch_running}
           次のフレームを処理中です。
+        {:else if stats.scheduler_enabled}
+          次回バッチは <span class="font-medium text-ink-700">{formatSchedule(stats.next_batch_run_at)}</span> に予定されています。
         {:else if stats.server_running}
           VLM サーバーは起動済みです。バッチを開始できます。
         {:else}

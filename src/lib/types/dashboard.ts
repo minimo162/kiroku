@@ -11,9 +11,11 @@ export type DashboardStatsPayload = {
   effective_captures: number;
   skipped_captures: number;
   vlm_processed: number;
+  scheduler_enabled: boolean;
   is_recording: boolean;
   server_running: boolean;
   batch_running: boolean;
+  next_batch_run_at: string | null;
   last_capture_at: string | null;
   last_error: string | null;
 };

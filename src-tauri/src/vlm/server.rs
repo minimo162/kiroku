@@ -359,6 +359,40 @@ fn resolve_binary_path(app_paths: &AppPaths) -> Option<PathBuf> {
     })
 }
 
+pub fn resolve_model_paths(app_paths: &AppPaths) -> Option<(PathBuf, PathBuf)> {
+    let models_dir = app_paths.data_dir.join("models");
+    let entries = fs::read_dir(models_dir).ok()?;
+
+    let mut model_path = None;
+    let mut mmproj_path = None;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let Some(file_name) = path.file_name().map(|value| value.to_string_lossy()) else {
+            continue;
+        };
+        let file_name = file_name.to_ascii_lowercase();
+
+        if !file_name.ends_with(".gguf") {
+            continue;
+        }
+
+        if file_name.contains("mmproj") {
+            if mmproj_path.is_none() {
+                mmproj_path = Some(path);
+            }
+        } else if model_path.is_none() {
+            model_path = Some(path);
+        }
+    }
+
+    Some((model_path?, mmproj_path?))
+}
+
 fn binary_names() -> Vec<&'static str> {
     if cfg!(windows) {
         vec!["llama-server.exe", "llama-server"]
@@ -406,7 +440,9 @@ mod tests {
         net::TcpListener,
     };
 
-    use super::{find_binary_in_dir, parse_host_and_port, LlamaServer, VlmError};
+    use super::{
+        find_binary_in_dir, parse_host_and_port, resolve_model_paths, LlamaServer, VlmError,
+    };
     use crate::{config::AppPaths, models::AppConfig};
 
     fn test_dir(test_name: &str) -> PathBuf {
@@ -459,6 +495,25 @@ mod tests {
 
         let discovered = find_binary_in_dir(&dir).expect("binary should be discovered");
         assert_eq!(discovered, binary_path);
+
+        fs::remove_dir_all(&dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn resolve_model_paths_picks_model_and_mmproj() {
+        let dir = test_dir("model-discovery");
+        let app_paths = AppPaths::new(dir.clone());
+        let models_dir = dir.join("models");
+        fs::create_dir_all(&models_dir).expect("models directory should exist");
+
+        let model_path = models_dir.join("qwen2.5-vl-0.5b-instruct.gguf");
+        let mmproj_path = models_dir.join("qwen2.5-vl-mmproj-f16.gguf");
+        fs::write(&model_path, b"model").expect("model fixture should be written");
+        fs::write(&mmproj_path, b"mmproj").expect("mmproj fixture should be written");
+
+        let discovered = resolve_model_paths(&app_paths).expect("model paths should resolve");
+        assert_eq!(discovered.0, model_path);
+        assert_eq!(discovered.1, mmproj_path);
 
         fs::remove_dir_all(&dir).expect("test directory should be removed");
     }

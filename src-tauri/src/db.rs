@@ -402,6 +402,15 @@ pub fn count_processed_captures(conn: &Connection) -> Result<u64, DbError> {
     Ok(count)
 }
 
+pub fn count_unprocessed_captures(conn: &Connection) -> Result<u64, DbError> {
+    let count = conn.query_row(
+        "SELECT COUNT(*) FROM captures WHERE vlm_processed = 0",
+        [],
+        |row| row.get::<_, u64>(0),
+    )?;
+    Ok(count)
+}
+
 fn apply_migrations(conn: &Connection) -> Result<(), DbError> {
     let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
 

@@ -7,6 +7,7 @@ pub mod export;
 pub mod models;
 pub mod preview;
 pub mod recorder;
+pub mod scheduler;
 pub mod state;
 pub mod tray;
 pub mod vlm;
@@ -22,6 +23,7 @@ use preview::{
     get_capture_description_history, get_capture_preview_page, update_capture_description,
 };
 use recorder::{start_recording, stop_recording};
+use scheduler::spawn_scheduler;
 use state::AppState;
 use tray::{handle_close_requested, setup_tray};
 use vlm::batch::{cancel_vlm_batch, pause_vlm_batch, resume_vlm_batch, run_vlm_batch};
@@ -31,11 +33,14 @@ use vlm::server::{check_vlm_status, start_vlm_server, stop_vlm_server};
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let state = AppState::new(app.handle())?;
+            let scheduler_state = state.clone();
             app.manage(state);
             setup_tray(app.handle())?;
+            spawn_scheduler(app.handle().clone(), scheduler_state);
             #[cfg(desktop)]
             {
                 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
