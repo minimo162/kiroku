@@ -72,6 +72,15 @@ pub struct VlmState {
     pub last_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VlmBatchProgress {
+    pub total: usize,
+    pub completed: usize,
+    pub failed: usize,
+    pub current_id: Option<String>,
+    pub estimated_remaining_secs: Option<u64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{AppConfig, CaptureRecord};

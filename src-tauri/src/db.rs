@@ -1,6 +1,7 @@
 use std::{fs, path::Path};
 
 use rusqlite::{params, params_from_iter, Connection, ToSql};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::models::CaptureRecord;
@@ -15,7 +16,7 @@ pub enum DbError {
     Sql(#[from] rusqlite::Error),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredCaptureRecord {
     pub id: String,
     pub timestamp: String,
@@ -155,6 +156,47 @@ pub fn query_captures_filtered(
     }
 
     Ok(captures)
+}
+
+pub fn get_recent_captures(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<StoredCaptureRecord>, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, timestamp, app, window_title, image_path, description, dhash, vlm_processed
+         FROM captures
+         ORDER BY timestamp DESC
+         LIMIT ?1",
+    )?;
+
+    let rows = stmt.query_map(params![limit as i64], |row| {
+        Ok(StoredCaptureRecord {
+            id: row.get(0)?,
+            timestamp: row.get(1)?,
+            app: row.get(2)?,
+            window_title: row.get(3)?,
+            image_path: row.get(4)?,
+            description: row.get(5)?,
+            dhash: row.get(6)?,
+            vlm_processed: row.get::<_, i64>(7)? != 0,
+        })
+    })?;
+
+    let mut captures = Vec::new();
+    for row in rows {
+        captures.push(row?);
+    }
+
+    Ok(captures)
+}
+
+pub fn count_processed_captures(conn: &Connection) -> Result<u64, DbError> {
+    let count = conn.query_row(
+        "SELECT COUNT(*) FROM captures WHERE vlm_processed = 1",
+        [],
+        |row| row.get::<_, u64>(0),
+    )?;
+    Ok(count)
 }
 
 fn apply_migrations(conn: &Connection) -> Result<(), DbError> {

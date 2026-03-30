@@ -9,7 +9,7 @@ use tokio::{
 use crate::{
     config::{load_or_create_config_for_manager, AppPaths, ConfigError},
     db::{initialize_db, DbError},
-    models::{AppConfig, CaptureStats, VlmState},
+    models::{AppConfig, CaptureStats, VlmBatchProgress, VlmState},
     vlm::server::{LlamaServer, VlmError},
 };
 
@@ -29,6 +29,7 @@ pub struct AppState {
     pub config: Arc<Mutex<AppConfig>>,
     pub capture_stats: Arc<Mutex<CaptureStats>>,
     pub vlm_state: Arc<Mutex<VlmState>>,
+    pub vlm_progress: Arc<Mutex<VlmBatchProgress>>,
     pub vlm_server: Arc<Mutex<LlamaServer>>,
     pub vlm_batch_stop_signal: Arc<Mutex<Option<watch::Sender<bool>>>>,
     pub vlm_batch_pause_signal: Arc<Mutex<Option<watch::Sender<bool>>>>,
@@ -51,6 +52,7 @@ impl AppState {
             config: Arc::new(Mutex::new(config)),
             capture_stats: Arc::new(Mutex::new(CaptureStats::default())),
             vlm_state: Arc::new(Mutex::new(VlmState::default())),
+            vlm_progress: Arc::new(Mutex::new(VlmBatchProgress::default())),
             vlm_server: Arc::new(Mutex::new(vlm_server)),
             vlm_batch_stop_signal: Arc::new(Mutex::new(None)),
             vlm_batch_pause_signal: Arc::new(Mutex::new(None)),

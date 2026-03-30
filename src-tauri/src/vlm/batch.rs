@@ -11,6 +11,7 @@ use tokio::{
 use crate::{
     capture::remove_capture_artifacts,
     db::{get_unprocessed, mark_processed, update_description},
+    models::VlmBatchProgress,
     state::AppState,
     vlm::{
         inference::describe_screenshot,
@@ -24,15 +25,6 @@ struct BatchOptions {
     model_path: Option<String>,
     mmproj_path: Option<String>,
     n_threads: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct BatchProgress {
-    total: usize,
-    completed: usize,
-    failed: usize,
-    current_id: Option<String>,
-    estimated_remaining_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -197,14 +189,14 @@ async fn vlm_batch_loop(
     };
 
     let total = unprocessed.len();
-    let progress = BatchProgress {
+    let progress = VlmBatchProgress {
         total,
         completed: 0,
         failed: 0,
         current_id: None,
         estimated_remaining_secs: if total == 0 { Some(0) } else { None },
     };
-    let _ = app.emit("vlm-progress", &progress);
+    emit_progress(&app, &state, progress).await;
 
     if total == 0 {
         finish_batch(
@@ -254,14 +246,14 @@ async fn vlm_batch_loop(
             return;
         }
 
-        let progress = BatchProgress {
+        let progress = VlmBatchProgress {
             total,
             completed,
             failed,
             current_id: Some(record.id.clone()),
             estimated_remaining_secs: estimate_remaining_secs(&elapsed_times, total, completed),
         };
-        let _ = app.emit("vlm-progress", &progress);
+        emit_progress(&app, &state, progress).await;
 
         let image_path = match record.image_path.as_deref() {
             Some(path) => path.to_string(),
@@ -351,16 +343,18 @@ async fn finish_batch(
     clear_batch_controls(state).await;
     let snapshot = update_vlm_state(state, None, Some(false), last_error).await;
     let _ = app.emit("vlm-status", &snapshot);
-    let _ = app.emit(
-        "vlm-progress",
-        &BatchProgress {
+    emit_progress(
+        app,
+        state,
+        VlmBatchProgress {
             total: result.total,
             completed: result.completed,
             failed: result.failed,
             current_id: None,
             estimated_remaining_secs: Some(0),
         },
-    );
+    )
+    .await;
     let _ = app.emit("vlm-batch-complete", &result);
 }
 
@@ -420,6 +414,15 @@ fn estimate_remaining_secs(elapsed_times: &[u64], total: usize, completed: usize
 
     let average = elapsed_times.iter().sum::<u64>() / elapsed_times.len() as u64;
     Some(average * total.saturating_sub(completed) as u64)
+}
+
+async fn emit_progress(app: &AppHandle, state: &AppState, progress: VlmBatchProgress) {
+    {
+        let mut current = state.vlm_progress.lock().await;
+        *current = progress.clone();
+    }
+
+    let _ = app.emit("vlm-progress", &progress);
 }
 
 #[cfg(test)]

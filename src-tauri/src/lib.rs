@@ -1,5 +1,6 @@
 pub mod capture;
 pub mod config;
+pub mod dashboard;
 pub mod db;
 pub mod diff;
 pub mod export;
@@ -13,6 +14,7 @@ pub mod window_meta;
 use tauri::Manager;
 
 use capture::capture_now;
+use dashboard::{get_dashboard_snapshot, get_recent_captures_command, get_stats};
 use export::{export_csv, preview_csv_export};
 use recorder::{start_recording, stop_recording};
 use state::AppState;
@@ -83,6 +85,9 @@ pub fn run() {
             cancel_vlm_batch,
             pause_vlm_batch,
             resume_vlm_batch,
+            get_stats,
+            get_recent_captures_command,
+            get_dashboard_snapshot,
             preview_csv_export,
             export_csv
         ])
