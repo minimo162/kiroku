@@ -1,0 +1,282 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": 1,
+        "title": "Tauri v2 + Svelte 5 プロジェクト初期構成",
+        "description": "Tauri v2 と Svelte 5 を使用したデスクトップアプリケーションのプロジェクト骨格を構築する。TypeScript、Tailwind CSS、Rust バックエンドの基本設定を含む。",
+        "details": "1. `npm create tauri-app@latest kiroku -- --template svelte-ts` で初期プロジェクトを作成\n2. Tailwind CSS を追加: `npm install -D tailwindcss @tailwindcss/vite`\n3. `tailwind.config.js` と `src/app.css` を設定\n4. `src-tauri/Cargo.toml` に必要な crate を追加:\n   - `xcap = \"0.0.14\"`\n   - `image = \"0.25\"`\n   - `windows = { version = \"0.58\", features = [\"Win32_UI_WindowsAndMessaging\", \"Win32_System_ProcessStatus\", \"Win32_Foundation\"] }`\n   - `tokio = { version = \"1\", features = [\"full\"] }`\n   - `reqwest = { version = \"0.12\", features = [\"json\", \"multipart\"] }`\n   - `serde = { version = \"1\", features = [\"derive\"] }`\n   - `serde_json = \"1\"`\n   - `csv = \"1.3\"`\n   - `tauri = { version = \"2\", features = [\"tray-icon\", \"image-ico\", \"image-png\"] }`\n5. `tauri.conf.json` で `identifier`, `windows`, `bundle` 設定（.msi 向け）\n6. `src/lib` ディレクトリにコンポーネント構造を作成\n7. 日本語 UI のためのフォント設定（Noto Sans JP）\n8. 開発環境確認: `npm run tauri dev` で起動確認",
+        "testStrategy": "`npm run tauri dev` でアプリが起動すること、TypeScript のコンパイルエラーがないこと、Tailwind のスタイルが適用されていることを確認する。`npm run tauri build` でビルドが通ることも確認する。",
+        "priority": "high",
+        "dependencies": [],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 2,
+        "title": "Rust アプリケーション状態管理とコアデータ構造の定義",
+        "description": "アプリケーション全体で共有する状態管理構造体とコアデータ型（スクリーンショットメタデータ、設定、記録状態など）を Rust で定義する。",
+        "details": "1. `src-tauri/src/state.rs` を作成し、`AppState` 構造体を定義:\n```rust\nuse std::sync::Arc;\nuse tokio::sync::Mutex;\n\npub struct AppState {\n    pub is_recording: Arc<Mutex<bool>>,\n    pub config: Arc<Mutex<AppConfig>>,\n    pub capture_stats: Arc<Mutex<CaptureStats>>,\n    pub vlm_state: Arc<Mutex<VlmState>>,\n}\n```\n2. `src-tauri/src/models.rs` でデータモデルを定義:\n```rust\n#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]\npub struct CaptureRecord {\n    pub id: String,           // UUID\n    pub timestamp: String,    // ISO 8601\n    pub app: String,          // プロセス名\n    pub window_title: String, // ウィンドウタイトル\n    pub image_path: Option<String>, // 一時保存パス\n    pub description: Option<String>, // VLM生成テキスト\n    pub dhash: Option<String>, // 差分ハッシュ値\n}\n\n#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]\npub struct AppConfig {\n    pub capture_interval_secs: u64,  // デフォルト: 30\n    pub dhash_threshold: u32,        // デフォルト: 10\n    pub auto_delete_images: bool,    // デフォルト: true\n    pub batch_time: String,          // デフォルト: \"22:00\"\n    pub vlm_host: String,            // デフォルト: \"127.0.0.1:8080\"\n    pub vlm_max_tokens: u32,         // デフォルト: 256\n    pub data_dir: String,            // データ保存ディレクトリ\n}\n```\n3. `src-tauri/src/main.rs` で `manage()` を使って `AppState` を Tauri に登録\n4. `Default` トレイトを実装し、設定のデフォルト値を定義\n5. `serde_json` で設定ファイル（`config.json`）の読み書き関数を実装",
+        "testStrategy": "Rust の `cargo test` でデータ構造のシリアライズ/デシリアライズが正常に動作することを確認。JSON のラウンドトリップテストを記述する。",
+        "priority": "high",
+        "dependencies": [
+          1
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 3,
+        "title": "スクリーンショット取得モジュール（xcap）の実装",
+        "description": "xcap crate を使用してプライマリモニタのスクリーンショットを定期的に取得する Rust モジュールを実装する。F-001 要件を満たす。",
+        "details": "1. `src-tauri/src/capture.rs` を作成:\n```rust\nuse xcap::Monitor;\nuse image::ImageFormat;\nuse std::path::PathBuf;\nuse chrono::Local;\n\npub async fn capture_primary_monitor(output_dir: &PathBuf) -> Result<PathBuf, CaptureError> {\n    let start = std::time::Instant::now();\n    \n    // プライマリモニタを取得\n    let monitors = Monitor::all()?;\n    let primary = monitors.iter()\n        .find(|m| m.is_primary())\n        .ok_or(CaptureError::NoPrimaryMonitor)?;\n    \n    // スクリーンショット取得\n    let image = primary.capture_image()?;\n    \n    // タイムスタンプベースのファイル名\n    let timestamp = Local::now().format(\"%Y%m%d_%H%M%S\");\n    let filename = format!(\"screenshot_{}.png\", timestamp);\n    let path = output_dir.join(&filename);\n    \n    // PNG として保存\n    image.save_with_format(&path, ImageFormat::Png)?;\n    \n    // パフォーマンス確認（500ms以内）\n    let elapsed = start.elapsed();\n    if elapsed > std::time::Duration::from_millis(500) {\n        log::warn!(\"Screenshot took too long: {:?}\", elapsed);\n    }\n    \n    Ok(path)\n}\n```\n2. エラー型 `CaptureError` を `thiserror` crate で定義\n3. Tauri コマンド `capture_now` を追加してフロントエンドから呼び出せるようにする\n4. 一時保存ディレクトリのパス管理（`tauri::path::app_local_data_dir()` 使用）\n5. 取得した画像の UUID と紐づけたメタデータ記録",
+        "testStrategy": "Tauri コマンド経由でスクリーンショットを取得し、指定ディレクトリに PNG ファイルが500ms以内に生成されることを確認。プライマリモニタの解像度と一致する画像サイズを検証する。",
+        "priority": "high",
+        "dependencies": [
+          2
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 4,
+        "title": "dHash 差分検出モジュールの実装",
+        "description": "dHash（差分ハッシュ）アルゴリズムを使用して連続するスクリーンショット間の変化を検出し、無変化フレームをスキップする機能を実装する。F-002 要件を満たす。",
+        "details": "1. `src-tauri/src/diff.rs` を作成:\n```rust\nuse image::{DynamicImage, GrayImage, imageops};\n\n/// dHash: 8x9 グレースケール画像の水平差分から 64bit ハッシュを生成\npub fn compute_dhash(image: &DynamicImage) -> u64 {\n    // 9x8 にリサイズ（幅9, 高さ8）\n    let resized = image.resize_exact(9, 8, imageops::FilterType::Lanczos3);\n    let gray = resized.to_luma8();\n    \n    let mut hash: u64 = 0;\n    for y in 0..8 {\n        for x in 0..8 {\n            let left = gray.get_pixel(x, y)[0] as u64;\n            let right = gray.get_pixel(x + 1, y)[0] as u64;\n            hash = (hash << 1) | if left < right { 1 } else { 0 };\n        }\n    }\n    hash\n}\n\n/// ハミング距離でハッシュ間の差異を計算（0=同一, 64=完全に異なる）\npub fn hamming_distance(hash1: u64, hash2: u64) -> u32 {\n    (hash1 ^ hash2).count_ones()\n}\n\n/// 変化ありかどうかを判定（閾値以上なら変化あり）\npub fn has_significant_change(hash1: u64, hash2: u64, threshold: u32) -> bool {\n    hamming_distance(hash1, hash2) >= threshold\n}\n```\n2. 直前フレームのハッシュを `AppState` に保持\n3. キャプチャループに差分チェックを組み込む\n4. 処理時間を計測し 50ms 以内であることをログに記録\n5. 閾値の設定画面からの動的変更に対応",
+        "testStrategy": "同一画像に対してハミング距離が0になること、全く異なる画像でハミング距離が高い値になること、デフォルト閾値10で意味のある変化を正しく検出できることをユニットテストで確認する。処理時間が50ms以内であることも計測する。",
+        "priority": "high",
+        "dependencies": [
+          3
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 5,
+        "title": "ウィンドウメタデータ取得モジュール（windows-rs）の実装",
+        "description": "windows-rs crate を使用してアクティブウィンドウのタイトルとプロセス名を取得する Rust モジュールを実装する。F-003 要件を満たす。",
+        "details": "1. `src-tauri/src/window_meta.rs` を作成:\n```rust\nuse windows::Win32::UI::WindowsAndMessaging::{\n    GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId\n};\nuse windows::Win32::System::ProcessStatus::GetModuleBaseNameW;\nuse windows::Win32::Foundation::HWND;\nuse std::ffi::OsString;\nuse std::os::windows::ffi::OsStringExt;\n\n#[derive(Debug, Clone, serde::Serialize)]\npub struct WindowMetadata {\n    pub window_title: String,\n    pub process_name: String,\n    pub process_id: u32,\n}\n\npub fn get_active_window_metadata() -> Result<WindowMetadata, WindowMetaError> {\n    unsafe {\n        let hwnd = GetForegroundWindow();\n        if hwnd.0 == 0 {\n            return Err(WindowMetaError::NoActiveWindow);\n        }\n        \n        // ウィンドウタイトル取得\n        let mut title_buf = vec![0u16; 512];\n        let title_len = GetWindowTextW(hwnd, &mut title_buf);\n        let window_title = OsString::from_wide(&title_buf[..title_len as usize])\n            .to_string_lossy()\n            .to_string();\n        \n        // プロセスID取得\n        let mut pid: u32 = 0;\n        GetWindowThreadProcessId(hwnd, Some(&mut pid));\n        \n        // プロセス名取得\n        let process_name = get_process_name(pid)?;\n        \n        Ok(WindowMetadata { window_title, process_name, process_id: pid })\n    }\n}\n```\n2. `OpenProcess` と `GetModuleBaseNameW` でプロセス名を取得するヘルパー関数\n3. エラー型 `WindowMetaError` の定義\n4. 権限エラー時のフォールバック（Unknown として記録）\n5. キャプチャタイミングと同期して取得",
+        "testStrategy": "SAP GUI、Excel、Outlook のウィンドウがアクティブな状態でメタデータを取得し、正しいプロセス名とウィンドウタイトルが返ることを手動テストで確認する。管理者権限なしで動作することも確認する。",
+        "priority": "high",
+        "dependencies": [
+          2
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 6,
+        "title": "記録ループとキャプチャスケジューラの実装",
+        "description": "tokio を使用して指定間隔（デフォルト30秒）でスクリーンショット取得・差分検出・メタデータ収集を繰り返すバックグラウンドループを実装する。F-001〜F-003、F-008 要件を満たす。",
+        "details": "1. `src-tauri/src/recorder.rs` を作成:\n```rust\nuse tokio::time::{interval, Duration};\nuse tokio::sync::watch;\nuse crate::state::AppState;\n\npub async fn recording_loop(\n    state: AppState,\n    mut stop_rx: watch::Receiver<bool>,\n) {\n    let config = state.config.lock().await.clone();\n    let mut ticker = interval(Duration::from_secs(config.capture_interval_secs));\n    let mut prev_hash: Option<u64> = None;\n    \n    loop {\n        tokio::select! {\n            _ = ticker.tick() => {\n                if *stop_rx.borrow() { break; }\n                \n                // スクリーンショット取得\n                let image_path = match capture_primary_monitor(&data_dir).await {\n                    Ok(p) => p,\n                    Err(e) => { log::error!(\"Capture failed: {:?}\", e); continue; }\n                };\n                \n                // 画像ロードして差分チェック\n                let img = image::open(&image_path).unwrap();\n                let hash = compute_dhash(&img);\n                \n                if let Some(ph) = prev_hash {\n                    let config = state.config.lock().await;\n                    if !has_significant_change(ph, hash, config.dhash_threshold) {\n                        // 変化なし: 画像削除してスキップ\n                        let _ = std::fs::remove_file(&image_path);\n                        continue;\n                    }\n                }\n                prev_hash = Some(hash);\n                \n                // メタデータ取得\n                let meta = get_active_window_metadata().unwrap_or_default();\n                \n                // CaptureRecord を保存\n                save_capture_record(&state, &image_path, &meta, hash).await;\n            }\n            _ = stop_rx.changed() => {\n                if *stop_rx.borrow() { break; }\n            }\n        }\n    }\n}\n```\n2. Tauri コマンド `start_recording` / `stop_recording` の実装\n3. `watch::channel` で停止シグナルを管理\n4. tokio の `spawn` でバックグラウンドタスクとして起動\n5. キャプチャ統計（総数・有効数）を `AppState` に更新\n6. Tauri イベントでフロントエンドにリアルタイム通知",
+        "testStrategy": "記録開始後、設定間隔でファイルが生成されることを確認。停止コマンドで確実に停止すること、差分なしのフレームがスキップされることを確認する。メモリリークがないことを長時間実行テストで確認する。",
+        "priority": "high",
+        "dependencies": [
+          3,
+          4,
+          5
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 7,
+        "title": "キャプチャデータの永続化（SQLite + rusqlite）",
+        "description": "スクリーンショットメタデータと VLM 記述を SQLite データベースに永続化する。画像パス、タイムスタンプ、アプリ名、ウィンドウタイトル、VLM テキスト記述を管理する。",
+        "details": "1. `Cargo.toml` に `rusqlite = { version = \"0.31\", features = [\"bundled\"] }` を追加\n2. `src-tauri/src/db.rs` を作成:\n```rust\nuse rusqlite::{Connection, params};\n\npub fn initialize_db(db_path: &str) -> Result<Connection, rusqlite::Error> {\n    let conn = Connection::open(db_path)?;\n    conn.execute_batch(\"\n        CREATE TABLE IF NOT EXISTS captures (\n            id TEXT PRIMARY KEY,\n            timestamp TEXT NOT NULL,\n            app TEXT NOT NULL,\n            window_title TEXT NOT NULL,\n            image_path TEXT,\n            dhash TEXT,\n            description TEXT,\n            vlm_processed INTEGER DEFAULT 0,\n            created_at TEXT DEFAULT CURRENT_TIMESTAMP\n        );\n        CREATE INDEX IF NOT EXISTS idx_timestamp ON captures(timestamp);\n        CREATE INDEX IF NOT EXISTS idx_app ON captures(app);\n        CREATE INDEX IF NOT EXISTS idx_vlm_processed ON captures(vlm_processed);\n    \")?;\n    Ok(conn)\n}\n\npub fn insert_capture(conn: &Connection, record: &CaptureRecord) -> Result<(), rusqlite::Error> {\n    conn.execute(\n        \"INSERT INTO captures (id, timestamp, app, window_title, image_path, dhash) VALUES (?1, ?2, ?3, ?4, ?5, ?6)\",\n        params![record.id, record.timestamp, record.app, record.window_title, record.image_path, record.dhash]\n    )?;\n    Ok(())\n}\n```\n3. `update_description` / `mark_processed` / `get_unprocessed` 関数を実装\n4. `AppState` に `Arc<Mutex<Connection>>` として DB 接続を保持\n5. データベースファイルは `tauri::path::app_local_data_dir()` 以下に保存\n6. マイグレーション管理（将来のスキーマ変更に対応）",
+        "testStrategy": "レコードの INSERT、SELECT、UPDATE が正常に動作することをユニットテストで確認。大量データ（10,000件）での検索パフォーマンスを測定する。アプリ再起動後もデータが保持されることを確認する。",
+        "priority": "high",
+        "dependencies": [
+          6
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 8,
+        "title": "llama-server サブプロセス管理モジュールの実装（Plan B）",
+        "description": "llama-server をサブプロセスとして起動・停止・ヘルスチェックする Rust モジュールを実装する。OpenAI 互換 API (localhost:8080) 経由で VLM 推論を提供する。",
+        "details": "1. `src-tauri/src/vlm/server.rs` を作成:\n```rust\nuse std::process::{Child, Command, Stdio};\nuse reqwest::Client;\n\npub struct LlamaServer {\n    process: Option<Child>,\n    host: String,\n    port: u16,\n    client: Client,\n}\n\nimpl LlamaServer {\n    pub async fn start(\n        &mut self,\n        model_path: &str,\n        mmproj_path: &str,\n        n_threads: usize,\n    ) -> Result<(), VlmError> {\n        let child = Command::new(\"llama-server\")\n            .args([\n                \"-m\", model_path,\n                \"--mmproj\", mmproj_path,\n                \"--host\", &self.host,\n                \"--port\", &self.port.to_string(),\n                \"-t\", &n_threads.to_string(),\n                \"--ctx-size\", \"4096\",\n                \"--log-disable\",\n            ])\n            .stdout(Stdio::null())\n            .stderr(Stdio::null())\n            .spawn()?;\n        \n        self.process = Some(child);\n        self.wait_for_ready(30).await?; // 最大30秒待機\n        Ok(())\n    }\n    \n    pub async fn wait_for_ready(&self, timeout_secs: u64) -> Result<(), VlmError> {\n        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);\n        loop {\n            if std::time::Instant::now() > deadline {\n                return Err(VlmError::StartupTimeout);\n            }\n            match self.client.get(format!(\"http://{}:{}/health\", self.host, self.port)).send().await {\n                Ok(r) if r.status().is_success() => return Ok(()),\n                _ => tokio::time::sleep(std::time::Duration::from_millis(500)).await,\n            }\n        }\n    }\n    \n    pub fn stop(&mut self) {\n        if let Some(mut child) = self.process.take() {\n            let _ = child.kill();\n        }\n    }\n}\n```\n2. `llama-server` バイナリのパス検索（同梱 or パス設定）\n3. Tauri の `on_window_event` でアプリ終了時にサーバーを停止\n4. ヘルスチェック用 Tauri コマンド `check_vlm_status` を追加\n5. サーバー起動失敗時のエラーメッセージをフロントエンドに通知",
+        "testStrategy": "llama-server バイナリを使って起動・ヘルスチェック・停止のライフサイクルを確認。アプリ終了時にサブプロセスが確実に終了することを確認。起動タイムアウトが正しく処理されることを確認する。",
+        "priority": "high",
+        "dependencies": [
+          2
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 9,
+        "title": "VLM 推論モジュール（画像→テキスト記述変換）の実装",
+        "description": "llama-server の OpenAI 互換 API を使用して、スクリーンショット画像から日本語のテキスト記述を生成する Rust モジュールを実装する。F-004 要件を満たす。",
+        "details": "1. `src-tauri/src/vlm/inference.rs` を作成:\n```rust\nuse reqwest::Client;\nuse base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};\nuse std::path::Path;\n\nconst SYSTEM_PROMPT: &str = \"あなたは業務PC画面の分析アシスタントです。\\\n    スクリーンショットを見て、実行中の業務と操作内容を日本語で簡潔に記述してください。\\\n    アプリケーション名、操作内容、表示データの種類を含めてください。\";\n\nconst USER_PROMPT: &str = \"この画面スクリーンショットに写っている業務操作を説明してください。\\\n    1-3文で簡潔に記述してください。\";\n\npub async fn describe_screenshot(\n    client: &Client,\n    image_path: &Path,\n    server_url: &str,\n    max_tokens: u32,\n) -> Result<String, VlmError> {\n    // 画像を base64 エンコード\n    let image_bytes = tokio::fs::read(image_path).await?;\n    let image_b64 = BASE64.encode(&image_bytes);\n    \n    // OpenAI 互換マルチモーダルリクエスト\n    let payload = serde_json::json!({\n        \"model\": \"qwen\",\n        \"messages\": [{\n            \"role\": \"system\",\n            \"content\": SYSTEM_PROMPT\n        }, {\n            \"role\": \"user\",\n            \"content\": [{\n                \"type\": \"image_url\",\n                \"image_url\": {\n                    \"url\": format!(\"data:image/png;base64,{}\", image_b64)\n                }\n            }, {\n                \"type\": \"text\",\n                \"text\": USER_PROMPT\n            }]\n        }],\n        \"max_tokens\": max_tokens,\n        \"temperature\": 0.1\n    });\n    \n    let response = client\n        .post(format!(\"{}/v1/chat/completions\", server_url))\n        .json(&payload)\n        .timeout(std::time::Duration::from_secs(60))\n        .send()\n        .await?\n        .json::<serde_json::Value>()\n        .await?;\n    \n    let text = response[\"choices\"][0][\"message\"][\"content\"]\n        .as_str()\n        .unwrap_or(\"[記述生成失敗]\")\n        .to_string();\n    \n    Ok(text)\n}\n```\n2. 画像の事前リサイズ（最大1280x720）でトークン消費を削減\n3. リトライロジック（3回、指数バックオフ）\n4. タイムアウト設定（60秒）\n5. 推論時間の計測とログ記録",
+        "testStrategy": "実際のスクリーンショット（SAP、Excel、Outlook）に対して推論を実行し、日本語の適切な記述が生成されること（40秒以内）を確認する。空画像や破損画像でのエラーハンドリングを確認する。",
+        "priority": "high",
+        "dependencies": [
+          8
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 10,
+        "title": "VLM バッチ処理エンジンの実装",
+        "description": "未処理スクリーンショットを夜間バッチとして VLM 推論する非同期エンジンを実装する。進捗追跡、エラーリカバリ、処理後の画像削除機能を含む。F-004、F-006 要件を満たす。",
+        "details": "1. `src-tauri/src/vlm/batch.rs` を作成:\n```rust\nuse tauri::{AppHandle, Emitter};\n\n#[derive(Clone, serde::Serialize)]\nstruct BatchProgress {\n    total: usize,\n    completed: usize,\n    failed: usize,\n    current_id: Option<String>,\n    estimated_remaining_secs: Option<u64>,\n}\n\npub async fn run_vlm_batch(\n    app: AppHandle,\n    state: AppState,\n    auto_delete: bool,\n) -> Result<BatchResult, VlmError> {\n    let unprocessed = get_unprocessed_captures(&state.db).await?;\n    let total = unprocessed.len();\n    \n    let mut completed = 0;\n    let mut failed = 0;\n    let mut elapsed_times: Vec<u64> = vec![];\n    \n    for record in &unprocessed {\n        // 進捗通知\n        let avg_time = if elapsed_times.is_empty() { 30u64 }\n            else { elapsed_times.iter().sum::<u64>() / elapsed_times.len() as u64 };\n        \n        let _ = app.emit(\"vlm-progress\", BatchProgress {\n            total,\n            completed,\n            failed,\n            current_id: Some(record.id.clone()),\n            estimated_remaining_secs: Some(avg_time * (total - completed) as u64),\n        });\n        \n        let start = std::time::Instant::now();\n        \n        match describe_screenshot(\n            &state.vlm_client,\n            &record.image_path,\n            &state.config.vlm_host,\n            state.config.vlm_max_tokens,\n        ).await {\n            Ok(description) => {\n                update_description(&state.db, &record.id, &description).await?;\n                if auto_delete {\n                    let _ = tokio::fs::remove_file(&record.image_path).await;\n                }\n                elapsed_times.push(start.elapsed().as_secs());\n                completed += 1;\n            }\n            Err(e) => {\n                log::error!(\"VLM inference failed for {}: {:?}\", record.id, e);\n                failed += 1;\n            }\n        }\n    }\n    \n    Ok(BatchResult { total, completed, failed })\n}\n```\n2. 処理の一時停止・再開機能\n3. VLM サーバーが起動していない場合の自動起動\n4. 最大同時推論数の設定（CPU 保護のため通常1）\n5. Tauri コマンド `run_vlm_batch` と `cancel_vlm_batch` を実装",
+        "testStrategy": "10枚のスクリーンショットに対してバッチ処理を実行し、全件が処理されCSVに反映されること、`auto_delete`が有効な場合に画像が削除されること、進捗イベントが正しく発火されることを確認する。",
+        "priority": "high",
+        "dependencies": [
+          7,
+          9
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 11,
+        "title": "CSV エクスポートモジュールの実装",
+        "description": "処理済みキャプチャデータを UTF-8 BOM 付き CSV ファイルにエクスポートする機能を実装する。日付範囲フィルタ、アプリフィルタ対応。F-005 要件を満たす。",
+        "details": "1. `src-tauri/src/export.rs` を作成:\n```rust\nuse csv::Writer;\nuse std::io::Write;\n\n#[derive(serde::Deserialize)]\npub struct ExportFilter {\n    pub start_date: Option<String>, // YYYY-MM-DD\n    pub end_date: Option<String>,   // YYYY-MM-DD\n    pub apps: Option<Vec<String>>,  // アプリ名フィルタ\n    pub only_processed: bool,       // VLM処理済みのみ\n}\n\npub async fn export_to_csv(\n    conn: &Connection,\n    filter: &ExportFilter,\n    output_path: &str,\n) -> Result<usize, ExportError> {\n    // UTF-8 BOM を先頭に書き込み（Excel対応）\n    let mut file = std::fs::File::create(output_path)?;\n    file.write_all(&[0xEF, 0xBB, 0xBF])?; // BOM\n    \n    let mut writer = Writer::from_writer(file);\n    \n    // ヘッダー行\n    writer.write_record(&[\"timestamp\", \"app\", \"window_title\", \"description\"])?;\n    \n    // DBからフィルタリングしてデータ取得\n    let records = query_captures_filtered(conn, filter)?;\n    let count = records.len();\n    \n    for record in records {\n        writer.write_record(&[\n            &record.timestamp,\n            &record.app,\n            &record.window_title,\n            &record.description.unwrap_or_default(),\n        ])?;\n    }\n    \n    writer.flush()?;\n    Ok(count)\n}\n```\n2. Tauri コマンド `export_csv` を実装（ファイルダイアログ付き）\n3. `tauri-plugin-dialog` でファイル保存ダイアログを表示\n4. エクスポート前にプレビュー件数を表示\n5. エクスポート結果（件数、パス）をフロントエンドに返す",
+        "testStrategy": "Excel で CSV を開いて文字化けしないこと（UTF-8 BOM）、日付フィルタで正しくデータが絞り込まれること、全カラムが正しく出力されること、description が null の行が空文字で出力されることを確認する。",
+        "priority": "high",
+        "dependencies": [
+          7
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 12,
+        "title": "システムトレイ常駐機能の実装",
+        "description": "アプリをシステムトレイに常駐させ、ウィンドウを閉じてもバックグラウンドで記録継続する機能を実装する。トレイメニューから記録制御、ウィンドウ表示/非表示を行う。F-007、F-008 要件を満たす。",
+        "details": "1. `src-tauri/src/tray.rs` を作成:\n```rust\nuse tauri::{AppHandle, Manager, tray::{TrayIconBuilder, MenuId}};\n\npub fn setup_tray(app: &AppHandle) -> Result<(), tauri::Error> {\n    let menu = tauri::menu::MenuBuilder::new(app)\n        .item(&tauri::menu::MenuItem::with_id(app, \"show\", \"ウィンドウを表示\", true, None::<&str>)?)\n        .separator()\n        .item(&tauri::menu::MenuItem::with_id(app, \"start_recording\", \"記録開始\", true, None::<&str>)?)\n        .item(&tauri::menu::MenuItem::with_id(app, \"stop_recording\", \"記録停止\", true, None::<&str>)?)\n        .separator()\n        .item(&tauri::menu::MenuItem::with_id(app, \"quit\", \"終了\", true, None::<&str>)?)\n        .build()?;\n    \n    TrayIconBuilder::new()\n        .icon(app.default_window_icon().unwrap().clone())\n        .menu(&menu)\n        .tooltip(\"Kiroku - 業務記録\")\n        .on_menu_event(move |app, event| {\n            match event.id().as_ref() {\n                \"show\" => { app.get_webview_window(\"main\").unwrap().show().unwrap(); }\n                \"start_recording\" => { /* start_recording コマンドを呼び出す */ }\n                \"stop_recording\" => { /* stop_recording コマンドを呼び出す */ }\n                \"quit\" => { app.exit(0); }\n                _ => {}\n            }\n        })\n        .build(app)?;\n    \n    Ok(())\n}\n```\n2. `tauri.conf.json` で `closeAction: \"hide\"` を設定してウィンドウを隠す\n3. 記録中はトレイアイコンを変更（録画中インジケータ）\n4. グローバルホットキーの設定（`tauri-plugin-global-shortcut`）: Ctrl+Shift+R で記録トグル\n5. トレイアイコン用 PNG ファイルの作成（recording/idle の2種類）",
+        "testStrategy": "ウィンドウを閉じた後もキャプチャが継続されること、トレイメニューから記録停止が機能すること、ダブルクリックでウィンドウが再表示されること、アプリ終了時にクリーンアップ（サブプロセス停止等）が実行されることを確認する。",
+        "priority": "high",
+        "dependencies": [
+          6
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 13,
+        "title": "ダッシュボード UI の実装（Svelte 5）",
+        "description": "今日のキャプチャ数、有効フレーム数、VLM 処理進捗、記録状態を表示するメインダッシュボードを Svelte 5 で実装する。F-101 要件を満たす。",
+        "details": "1. `src/routes/` ディレクトリ構造（SvelteKit または Svelte Router 使用）:\n   - `+layout.svelte`: サイドナビ + メインコンテンツ領域\n   - `dashboard/+page.svelte`: メインダッシュボード\n2. ダッシュボードコンポーネント:\n```svelte\n<!-- src/routes/dashboard/+page.svelte -->\n<script lang=\"ts\">\n  import { invoke } from '@tauri-apps/api/core';\n  import { listen } from '@tauri-apps/api/event';\n  \n  let stats = $state({ total: 0, effective: 0, vlmProcessed: 0, isRecording: false });\n  let vlmProgress = $state({ total: 0, completed: 0, estimated: null });\n  \n  $effect(() => {\n    // 初期データ取得\n    invoke('get_stats').then(s => stats = s);\n    \n    // リアルタイム更新\n    const unlistenCapture = listen('capture-added', () => {\n      invoke('get_stats').then(s => stats = s);\n    });\n    \n    const unlistenVlm = listen('vlm-progress', (event) => {\n      vlmProgress = event.payload;\n    });\n    \n    return () => {\n      unlistenCapture.then(f => f());\n      unlistenVlm.then(f => f());\n    };\n  });\n</script>\n\n<div class=\"grid grid-cols-3 gap-4 p-6\">\n  <StatCard title=\"本日のキャプチャ\" value={stats.total} unit=\"枚\" />\n  <StatCard title=\"有効フレーム\" value={stats.effective} unit=\"枚\" />\n  <StatCard title=\"VLM処理済み\" value={stats.vlmProcessed} unit=\"枚\" />\n</div>\n```\n3. 記録開始/停止ボタン（大きく目立つデザイン）\n4. VLM バッチ実行ボタンと進捗バー\n5. 最新キャプチャの一覧（タイムスタンプ、アプリ名）\n6. レスポンシブレイアウト（Tailwind CSS）",
+        "testStrategy": "記録開始/停止ボタンが機能すること、キャプチャ数がリアルタイムで更新されること、VLM 進捗バーが正しく表示されること、日本語フォントが正しく表示されることを確認する。",
+        "priority": "high",
+        "dependencies": [
+          6,
+          10,
+          12
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 14,
+        "title": "設定画面 UI の実装",
+        "description": "キャプチャ間隔、差分閾値、VLM 設定、バッチスケジュール、データ保存ディレクトリ等を設定する画面を実装する。設定の永続化を含む。F-102 要件を満たす。",
+        "details": "1. `src/routes/settings/+page.svelte` を作成:\n```svelte\n<script lang=\"ts\">\n  import { invoke } from '@tauri-apps/api/core';\n  \n  let config = $state({\n    captureIntervalSecs: 30,\n    dhashThreshold: 10,\n    autoDeleteImages: true,\n    batchTime: '22:00',\n    vlmHost: '127.0.0.1:8080',\n    vlmMaxTokens: 256,\n    dataDir: '',\n  });\n  \n  async function saveConfig() {\n    await invoke('save_config', { config });\n    // 保存成功トースト通知\n  }\n</script>\n\n<section class=\"p-6 space-y-6\">\n  <h2 class=\"text-xl font-bold\">キャプチャ設定</h2>\n  <div class=\"form-group\">\n    <label>キャプチャ間隔（秒）</label>\n    <input type=\"range\" min=\"10\" max=\"300\" step=\"10\" bind:value={config.captureIntervalSecs} />\n    <span>{config.captureIntervalSecs}秒</span>\n  </div>\n  <!-- ... その他の設定項目 ... -->\n  <button onclick={saveConfig} class=\"btn-primary\">設定を保存</button>\n</section>\n```\n2. 設定保存 Tauri コマンド `save_config` / `get_config` の実装\n3. `app_local_data_dir()/config.json` への永続化\n4. VLM サーバー接続テストボタン\n5. データ保存ディレクトリのフォルダ選択ダイアログ\n6. 設定変更時に記録ループへの反映（リスタート等）",
+        "testStrategy": "設定を変更して保存後、アプリを再起動しても設定が維持されることを確認。VLM 接続テストが成功/失敗で適切なフィードバックを返すことを確認する。",
+        "priority": "medium",
+        "dependencies": [
+          13
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 15,
+        "title": "記述プレビュー画面の実装",
+        "description": "スクリーンショットと VLM 生成テキスト記述を並べて表示し、手動で編集・修正できるプレビュー画面を実装する。F-103 要件を満たす。",
+        "details": "1. `src/routes/preview/+page.svelte` を作成:\n```svelte\n<script lang=\"ts\">\n  import { invoke } from '@tauri-apps/api/core';\n  \n  let records = $state([]);\n  let selectedId = $state(null);\n  let editingDescription = $state('');\n  \n  async function loadRecords(date: string) {\n    records = await invoke('get_captures_by_date', { date });\n  }\n  \n  async function saveDescription(id: string) {\n    await invoke('update_description', { id, description: editingDescription });\n    // インライン保存フィードバック\n  }\n</script>\n\n<div class=\"flex h-full\">\n  <!-- 左ペイン: 記録リスト -->\n  <div class=\"w-1/3 overflow-y-auto border-r\">\n    {#each records as record}\n      <div \n        class=\"p-3 cursor-pointer hover:bg-gray-50\"\n        onclick={() => { selectedId = record.id; editingDescription = record.description ?? ''; }}\n      >\n        <div class=\"text-sm font-mono\">{record.timestamp}</div>\n        <div class=\"text-xs text-gray-500\">{record.app}</div>\n      </div>\n    {/each}\n  </div>\n  <!-- 右ペイン: 画像 + 記述編集 -->\n  {#if selectedId}\n    <div class=\"flex-1 p-4 space-y-4\">\n      <!-- 注意: 画像は VLM 処理後に削除されている場合あり -->\n      <textarea bind:value={editingDescription} class=\"w-full h-32 border rounded p-2\" />\n      <button onclick={() => saveDescription(selectedId)} class=\"btn-primary\">保存</button>\n    </div>\n  {/if}\n</div>\n```\n2. 日付選択コンポーネントで対象日の記録を切り替え\n3. 画像ファイルが存在する場合のみサムネイル表示（削除済みは placeholder）\n4. 記述の編集履歴（変更前後を追跡）\n5. ページネーション（1ページ50件）",
+        "testStrategy": "記録リストから選択してテキスト編集・保存後、DB に反映されることを確認。画像削除済みの場合に placeholder が表示されることを確認する。",
+        "priority": "medium",
+        "dependencies": [
+          13
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 16,
+        "title": "エクスポート画面 UI の実装",
+        "description": "日付範囲選択、アプリフィルタ、エクスポート先指定を持つ CSV エクスポート画面を実装する。F-104 要件を満たす。",
+        "details": "1. `src/routes/export/+page.svelte` を作成:\n```svelte\n<script lang=\"ts\">\n  import { invoke } from '@tauri-apps/api/core';\n  import { save } from '@tauri-apps/plugin-dialog';\n  \n  let filter = $state({\n    startDate: getToday(),\n    endDate: getToday(),\n    apps: [],\n    onlyProcessed: true,\n  });\n  let previewCount = $state(0);\n  let isExporting = $state(false);\n  \n  $effect(async () => {\n    previewCount = await invoke('count_captures_for_export', { filter });\n  });\n  \n  async function handleExport() {\n    const savePath = await save({\n      filters: [{ name: 'CSV', extensions: ['csv'] }],\n      defaultPath: `kiroku_${filter.startDate}.csv`,\n    });\n    if (!savePath) return;\n    \n    isExporting = true;\n    const result = await invoke('export_csv', { filter, outputPath: savePath });\n    isExporting = false;\n    // 完了通知\n  }\n</script>\n\n<div class=\"p-6 space-y-4\">\n  <h2 class=\"text-xl font-bold\">CSVエクスポート</h2>\n  <!-- 日付範囲 -->\n  <!-- アプリフィルタ -->\n  <div class=\"text-sm text-gray-500\">{previewCount}件のレコードがエクスポートされます</div>\n  <button onclick={handleExport} disabled={isExporting}>\n    {isExporting ? 'エクスポート中...' : 'CSVをエクスポート'}\n  </button>\n</div>\n```\n2. アプリ名の一覧を DB から動的取得してチェックボックスで表示\n3. エクスポート完了後にファイルを Explorer で開くオプション\n4. エクスポート件数のリアルタイムプレビュー\n5. `tauri-plugin-shell` で `explorer /select,<path>` を実行",
+        "testStrategy": "日付フィルタを設定してプレビュー件数が正しく更新されること、エクスポートしたCSVをExcelで開いて文字化けがないこと、フィルタ条件が正しく適用されることを確認する。",
+        "priority": "medium",
+        "dependencies": [
+          11,
+          13
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 17,
+        "title": "バッチスケジューラの実装",
+        "description": "指定時刻（デフォルト22:00）に VLM バッチ処理を自動実行するスケジューラを実装する。F-205（アイドル検出）の基盤にもなる。",
+        "details": "1. `src-tauri/src/scheduler.rs` を作成:\n```rust\nuse tokio::time::{sleep_until, Instant};\nuse chrono::{Local, NaiveTime, Timelike};\n\npub async fn batch_scheduler_loop(\n    app: AppHandle,\n    state: AppState,\n    mut config_rx: watch::Receiver<AppConfig>,\n) {\n    loop {\n        let config = config_rx.borrow().clone();\n        let batch_time = NaiveTime::parse_from_str(&config.batch_time, \"%H:%M\")\n            .unwrap_or(NaiveTime::from_hms_opt(22, 0, 0).unwrap());\n        \n        // 次回実行時刻を計算\n        let now = Local::now();\n        let mut next_run = now.date_naive().and_time(batch_time);\n        if next_run <= now.naive_local() {\n            next_run = next_run + chrono::Duration::days(1);\n        }\n        \n        let duration = (next_run - now.naive_local()).to_std().unwrap();\n        \n        tokio::select! {\n            _ = tokio::time::sleep(duration) => {\n                // 未処理件数をチェック\n                let unprocessed_count = count_unprocessed(&state.db).await.unwrap_or(0);\n                if unprocessed_count > 0 {\n                    log::info!(\"Starting scheduled VLM batch: {} items\", unprocessed_count);\n                    // llama-server 起動\n                    let _ = start_vlm_server(&state).await;\n                    // バッチ実行\n                    let _ = run_vlm_batch(app.clone(), state.clone(), true).await;\n                    // llama-server 停止\n                    let _ = stop_vlm_server(&state).await;\n                }\n            }\n            _ = config_rx.changed() => {\n                // 設定変更時はスケジュールを再計算\n                continue;\n            }\n        }\n    }\n}\n```\n2. スケジューラの有効/無効切り替えを設定画面から制御\n3. 手動実行ボタンからも `run_vlm_batch` を呼び出せるようにする\n4. 次回バッチ実行時刻をダッシュボードに表示\n5. バッチ完了後にデスクトップ通知（`tauri-plugin-notification`）",
+        "testStrategy": "設定時刻の1分後にバッチが自動実行されることをテスト環境で確認。設定時刻変更後にスケジューラが正しく再設定されること、バッチ完了通知が表示されることを確認する。",
+        "priority": "medium",
+        "dependencies": [
+          10,
+          12
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 18,
+        "title": "モデル管理・初回セットアップウィザードの実装",
+        "description": "Qwen3.5-0.8B GGUF モデルのダウンロード進捗表示と初回セットアップウィザードを実装する。F-204 要件を満たし、非エンジニアでも利用開始できる UX を提供する。",
+        "details": "1. `src/routes/setup/+page.svelte` を作成（初回起動時のみ表示）:\n```svelte\n<script lang=\"ts\">\n  import { invoke } from '@tauri-apps/api/core';\n  import { listen } from '@tauri-apps/api/event';\n  \n  type Step = 'welcome' | 'model-download' | 'test-capture' | 'complete';\n  let currentStep = $state<Step>('welcome');\n  let downloadProgress = $state({ percent: 0, speed: '', remaining: '' });\n  \n  async function startModelDownload() {\n    currentStep = 'model-download';\n    await invoke('download_model');\n  }\n  \n  // ダウンロード進捗イベント\n  listen('model-download-progress', (event) => {\n    downloadProgress = event.payload;\n  });\n</script>\n```\n2. Rust 側のダウンロードロジック (`src-tauri/src/model_manager.rs`):\n   - Hugging Face からのダウンロード URL: `https://huggingface.co/Qwen/Qwen2.5-VL-0.5B-Instruct-GGUF`\n   - `reqwest` を使った非同期ダウンロード + 進捗報告\n   - SHA256 チェックサム検証\n   - ダウンロード済みチェック（再ダウンロードしない）\n3. モデルファイルの保存場所: `app_local_data_dir()/models/`\n4. llama-server バイナリの同梱または初回ダウンロード\n5. セットアップ完了フラグ (`setup_complete: bool`) を設定に追加\n6. 初回起動判定: `setup_complete` が false の場合にウィザードを表示",
+        "testStrategy": "初回起動時にウィザードが表示されること、モデルダウンロード後にチェックサムが検証されること、セットアップ完了後に再起動してもウィザードが表示されないことを確認する。",
+        "priority": "medium",
+        "dependencies": [
+          13,
+          8
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 19,
+        "title": "セキュリティ強化：画像確実削除とデータローカル完結の保証",
+        "description": "スクリーンショット画像の確実な削除、外部通信の禁止（llama-server への localhost 通信のみ許可）、CSVにテキストのみ含まれることを保証するセキュリティ機能を実装する。",
+        "details": "1. 画像削除の確実性:\n```rust\npub async fn secure_delete_image(path: &Path) -> Result<(), DeleteError> {\n    // ファイルが存在する場合のみ削除（エラーにしない）\n    if path.exists() {\n        tokio::fs::remove_file(path).await\n            .map_err(|e| DeleteError::IoError(e))?;\n        log::info!(\"Deleted screenshot: {:?}\", path);\n    }\n    Ok(())\n}\n\n// 起動時クリーンアップ: 前回クラッシュで残った画像を削除\npub async fn cleanup_orphaned_images(data_dir: &Path, conn: &Connection) {\n    // DB に記録されていない PNG ファイルをスキャンして削除\n    // VLM 処理済みで画像パスが残っているレコードの画像を削除\n}\n```\n2. `tauri.conf.json` のCSP設定:\n```json\n\"security\": {\n    \"csp\": \"default-src 'self'; connect-src 'self' http://127.0.0.1:8080; img-src 'self' asset: https://asset.localhost data:\"\n}\n```\n3. Tauri の `capabilities` で外部ドメインへのリクエストをブロック\n4. CSV 出力検証: `description` フィールドに `data:image` や Base64 が含まれないことをチェック\n5. アプリ起動時の孤立画像クリーンアップルーティン\n6. セキュリティ設定画面: 「画像を即時削除（推奨）」の視認性を高める",
+        "testStrategy": "VLM 処理完了後に画像ファイルが確実に削除されることを確認。生成されたCSVに画像データが含まれないことを確認。外部 URL へのリクエストが CSP でブロックされることを開発者ツールで確認する。アプリクラッシュ後の再起動で孤立画像が削除されることを確認する。",
+        "priority": "high",
+        "dependencies": [
+          10,
+          11
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 20,
+        "title": ".msi インストーラービルドと配布設定",
+        "description": "Tauri Bundler を使用して Windows 向け .msi インストーラーを作成し、チーム展開できる形態に整備する。llama-server バイナリの同梱、インストールサイズ最適化を含む。",
+        "details": "1. `tauri.conf.json` のバンドル設定:\n```json\n\"bundle\": {\n    \"active\": true,\n    \"targets\": [\"msi\"],\n    \"identifier\": \"jp.kiroku.app\",\n    \"icon\": [\"icons/kiroku.ico\"],\n    \"resources\": [\n        \"binaries/llama-server.exe\"\n    ],\n    \"windows\": {\n        \"certificateThumbprint\": null,\n        \"digestAlgorithm\": \"sha256\",\n        \"timestampUrl\": \"\",\n        \"wix\": {\n            \"language\": \"ja-JP\",\n            \"template\": \"wix/main.wxs\"\n        }\n    }\n}\n```\n2. `llama-server.exe` のビルド（llama.cpp リポジトリから Windows 向けクロスコンパイルまたはリリースバイナリ取得）\n3. Tauri の `sidecar` 機能でバイナリを同梱:\n   - `tauri.conf.json` の `externalBin` に `binaries/llama-server` を追加\n   - Rust 側で `tauri::process::Command::new_sidecar(\"llama-server\")` で起動\n4. WiX テンプレートで日本語インストーラー UI を設定\n5. GitHub Actions ワークフロー (`.github/workflows/release.yml`) でリリースビルドを自動化:\n   - Windows Server 2022 ランナーで `npm run tauri build`\n   - 成果物を GitHub Releases にアップロード\n6. インストール先: `%ProgramFiles%\\Kiroku`\n7. スタートメニューとデスクトップショートカットの作成\n8. アンインストール時のデータ保持オプション（レジストリ設定）",
+        "testStrategy": "クリーンな Windows 11 VM でインストーラーを実行し、エラーなくインストールできること、スタートメニューにショートカットが作成されること、起動してウィザードが表示されること、アンインストールが正常に機能することを確認する。",
+        "priority": "medium",
+        "dependencies": [
+          1,
+          12,
+          17,
+          18,
+          19
+        ],
+        "status": "pending",
+        "subtasks": []
+      }
+    ],
+    "metadata": {
+      "created": "2026-03-30T12:24:28.400Z",
+      "updated": "2026-03-30T12:24:28.400Z",
+      "description": "Tasks for master context"
+    }
+  }
+}

@@ -1,0 +1,43 @@
+@import "@fontsource/noto-sans-jp/400.css";
+@import "@fontsource/noto-sans-jp/500.css";
+@import "@fontsource/noto-sans-jp/700.css";
+@import "tailwindcss";
+@config "../tailwind.config.js";
+
+:root {
+  color: #0d1218;
+  background-color: #f7f1e4;
+  font-family: "Noto Sans JP", ui-sans-serif, system-ui, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at top left, rgba(221, 182, 104, 0.24), transparent 34%),
+    radial-gradient(circle at top right, rgba(98, 114, 134, 0.12), transparent 28%),
+    linear-gradient(180deg, #fcfaf5 0%, #f3ecdd 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+::selection {
+  background: rgba(199, 142, 58, 0.24);
+}
