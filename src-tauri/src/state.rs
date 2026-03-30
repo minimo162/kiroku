@@ -63,16 +63,18 @@ impl AppState {
         })
     }
 
-    pub fn shutdown_vlm_server_blocking(&self) {
-        tauri::async_runtime::block_on(async {
-            let stop_result = {
-                let mut server = self.vlm_server.lock().await;
-                server.stop()
-            };
+    pub async fn shutdown_vlm_server(&self) {
+        let stop_result = {
+            let mut server = self.vlm_server.lock().await;
+            server.stop()
+        };
 
-            let mut vlm_state = self.vlm_state.lock().await;
-            vlm_state.server_running = false;
-            vlm_state.last_error = stop_result.err().map(|error| error.to_string());
-        });
+        let mut vlm_state = self.vlm_state.lock().await;
+        vlm_state.server_running = false;
+        vlm_state.last_error = stop_result.err().map(|error| error.to_string());
+    }
+
+    pub fn shutdown_vlm_server_blocking(&self) {
+        tauri::async_runtime::block_on(self.shutdown_vlm_server());
     }
 }

@@ -13,6 +13,7 @@ use crate::{
     diff::{compute_dhash, has_significant_change},
     models::CaptureRecord,
     state::AppState,
+    tray::update_recording_tray_state,
     window_meta::{get_active_window_metadata, WindowMetadata},
 };
 
@@ -45,10 +46,11 @@ pub async fn recording_loop(app: AppHandle, state: AppState, mut stop_rx: watch:
     }
 
     *state.is_recording.lock().await = false;
+    let _ = update_recording_tray_state(&app, false);
+    let _ = app.emit("recording-status", false);
 }
 
-#[tauri::command]
-pub async fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
+pub async fn start_recording_inner(app: AppHandle, state: AppState) -> Result<bool, String> {
     {
         let is_recording = state.is_recording.lock().await;
         if *is_recording {
@@ -68,7 +70,7 @@ pub async fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Resu
         *is_recording = true;
     }
 
-    let recording_state = state.inner().clone();
+    let recording_state = state.clone();
     let task = tokio::spawn(recording_loop(app.clone(), recording_state, stop_rx));
 
     {
@@ -76,13 +78,13 @@ pub async fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Resu
         *recording_task = Some(task);
     }
 
+    let _ = update_recording_tray_state(&app, true);
     let _ = app.emit("recording-status", true);
 
     Ok(true)
 }
 
-#[tauri::command]
-pub async fn stop_recording(app: AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
+pub async fn stop_recording_inner(app: AppHandle, state: AppState) -> Result<bool, String> {
     let stop_signal = { state.stop_signal.lock().await.clone() };
     if let Some(sender) = stop_signal {
         let _ = sender.send(true);
@@ -103,9 +105,28 @@ pub async fn stop_recording(app: AppHandle, state: State<'_, AppState>) -> Resul
         *sender = None;
     }
 
-    let _ = app.emit("recording-status", false);
+    let _ = update_recording_tray_state(&app, false);
 
     Ok(true)
+}
+
+pub async fn toggle_recording_inner(app: AppHandle, state: AppState) -> Result<bool, String> {
+    let is_recording = *state.is_recording.lock().await;
+    if is_recording {
+        stop_recording_inner(app, state).await
+    } else {
+        start_recording_inner(app, state).await
+    }
+}
+
+#[tauri::command]
+pub async fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
+    start_recording_inner(app, state.inner().clone()).await
+}
+
+#[tauri::command]
+pub async fn stop_recording(app: AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
+    stop_recording_inner(app, state.inner().clone()).await
 }
 
 async fn capture_and_process_frame(app: &AppHandle, state: &AppState) -> Result<(), String> {
