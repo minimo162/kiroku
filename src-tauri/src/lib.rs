@@ -5,6 +5,7 @@ pub mod db;
 pub mod diff;
 pub mod export;
 pub mod models;
+pub mod preview;
 pub mod recorder;
 pub mod state;
 pub mod tray;
@@ -16,7 +17,10 @@ use tauri::Manager;
 use capture::capture_now;
 use config::{get_config, save_config_command, select_data_dir, test_vlm_connection};
 use dashboard::{get_dashboard_snapshot, get_recent_captures_command, get_stats};
-use export::{export_csv, preview_csv_export};
+use export::{export_csv, list_export_options, preview_csv_export};
+use preview::{
+    get_capture_description_history, get_capture_preview_page, update_capture_description,
+};
 use recorder::{start_recording, stop_recording};
 use state::AppState;
 use tray::{handle_close_requested, setup_tray};
@@ -94,7 +98,11 @@ pub fn run() {
             select_data_dir,
             test_vlm_connection,
             preview_csv_export,
-            export_csv
+            export_csv,
+            list_export_options,
+            get_capture_preview_page,
+            update_capture_description,
+            get_capture_description_history
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

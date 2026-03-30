@@ -12,7 +12,7 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use thiserror::Error;
 
-use crate::db::{query_captures_filtered, DbError};
+use crate::db::{list_capture_apps, query_captures_filtered, CaptureAppGroup, DbError};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -32,6 +32,11 @@ pub struct ExportPreview {
 pub struct ExportResult {
     pub count: usize,
     pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExportOptions {
+    pub apps: Vec<CaptureAppGroup>,
 }
 
 #[derive(Debug, Error)]
@@ -112,6 +117,13 @@ pub async fn preview_csv_export(
 ) -> Result<ExportPreview, String> {
     let db = state.db.lock().await;
     preview_export_count(&db, &filter).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn list_export_options(state: State<'_, AppState>) -> Result<ExportOptions, String> {
+    let db = state.db.lock().await;
+    let apps = list_capture_apps(&db).map_err(|error| error.to_string())?;
+    Ok(ExportOptions { apps })
 }
 
 #[tauri::command]
