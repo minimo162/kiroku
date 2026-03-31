@@ -63,7 +63,7 @@
       "title": "AppConfig にセッション設定フィールドを追加する",
       "description": "models.rs の AppConfig に session 関連フィールドを追加。後方互換性を serde(default) で維持。",
       "file": "src-tauri/src/models.rs",
-      "status": "todo",
+      "status": "done",
       "priority": "P0",
       "depends_on": [],
       "details": [
@@ -82,7 +82,7 @@
       "title": "DB マイグレーション: captures.session_id 追加 + sessions テーブル新規作成",
       "description": "db.rs のスキーマバージョンを 2 → 3 に上げ、sessions テーブルと captures.session_id 列を追加する。既存データへの影響なし（nullable な列と新テーブルの追加のみ）。",
       "file": "src-tauri/src/db.rs",
-      "status": "todo",
+      "status": "done",
       "priority": "P0",
       "depends_on": [],
       "details": [
@@ -119,9 +119,12 @@
       "title": "session.rs を新規作成（セッション組み立て・フレーム選択・コラージュ生成）",
       "description": "vlm/session.rs（またはトップレベル session.rs）を新規作成。未処理キャプチャをセッションにグループ化し、キーフレームを選択してコラージュ画像を生成する。",
       "file": "src-tauri/src/session.rs",
-      "status": "todo",
+      "status": "done",
       "priority": "P0",
-      "depends_on": ["T12", "T13"],
+      "depends_on": [
+        "T12",
+        "T13"
+      ],
       "details": [
         "## セッション組み立て: assemble_sessions()",
         "  引数: captures: Vec<CaptureRecord>, config: &AppConfig",
@@ -176,9 +179,12 @@
       "title": "vlm/batch.rs をセッション処理に対応させる（Copilot エンジン時）",
       "description": "Copilot エンジン + session_enabled: true の場合、個別キャプチャではなくセッション単位でバッチ処理する。llama エンジンまたは session_enabled: false の場合は既存の per-capture 処理を維持する。",
       "file": "src-tauri/src/vlm/batch.rs",
-      "status": "todo",
+      "status": "done",
       "priority": "P0",
-      "depends_on": ["T13", "T14"],
+      "depends_on": [
+        "T13",
+        "T14"
+      ],
       "details": [
         "vlm_batch_loop() の先頭でエンジンとセッション設定を確認:",
         "  if options.vlm_engine == 'copilot' && options.session_enabled {",
@@ -213,9 +219,11 @@
       "title": "settings/+page.svelte にセッション設定 UI を追加する",
       "description": "Copilot エンジン選択時にセッション関連の設定項目を表示する。llama エンジンでは折りたたみまたは非表示。",
       "file": "src/routes/settings/+page.svelte",
-      "status": "todo",
+      "status": "done",
       "priority": "P0",
-      "depends_on": ["T12"],
+      "depends_on": [
+        "T12"
+      ],
       "details": [
         "AppConfig 型定義に追加:",
         "  session_enabled: boolean",
@@ -301,7 +309,9 @@
       "file": "src/copilot_server.ts",
       "status": "done",
       "priority": "P0",
-      "depends_on": ["T18"],
+      "depends_on": [
+        "T18"
+      ],
       "details": [
         "## checkLoginState() 関数を追加",
         "  describe() の冒頭（ページ遷移直後）に呼び出す",
@@ -330,7 +340,10 @@
       "file": "src/routes/settings/+page.svelte",
       "status": "done",
       "priority": "P1",
-      "depends_on": ["T18", "T19"],
+      "depends_on": [
+        "T18",
+        "T19"
+      ],
       "details": [
         "## Tauri コマンドを追加 (vlm/server.rs)",
         "  #[tauri::command] check_copilot_connection(state) -> Result<CopilotStatus, String>",
@@ -361,7 +374,13 @@
       "file": null,
       "status": "todo",
       "priority": "P0",
-      "depends_on": ["T12", "T13", "T14", "T15", "T16"],
+      "depends_on": [
+        "T12",
+        "T13",
+        "T14",
+        "T15",
+        "T16"
+      ],
       "details": [
         "[ ] cargo build が警告なしで成功する",
         "[ ] cargo test が全テスト通過する（T01〜T11 の既存テスト後退なし）",
@@ -378,8 +397,14 @@
     }
   ],
   "implementation_order": [
-    "T12", "T13", "T14", "T15", "T16",
-    "T18", "T19", "T20",
+    "T12",
+    "T13",
+    "T14",
+    "T15",
+    "T16",
+    "T18",
+    "T19",
+    "T20",
     "T17"
   ],
   "notes": {
