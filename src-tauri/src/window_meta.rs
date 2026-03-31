@@ -38,7 +38,7 @@ pub fn get_active_window_metadata() -> Result<WindowMetadata, WindowMetaError> {
 
     unsafe {
         let hwnd: HWND = GetForegroundWindow();
-        if hwnd.0 == 0 {
+        if hwnd.0.is_null() {
             return Err(WindowMetaError::NoActiveWindow);
         }
 

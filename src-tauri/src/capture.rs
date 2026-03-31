@@ -90,7 +90,7 @@ fn capture_primary_monitor_blocking(output_dir: &Path) -> Result<CapturedFrame, 
         let monitors = Monitor::all()?;
         let primary = monitors
             .into_iter()
-            .find(|monitor| monitor.is_primary())
+            .find(|monitor| monitor.is_primary().unwrap_or(false))
             .ok_or(CaptureError::NoPrimaryMonitor)?;
 
         let image = primary.capture_image()?;
@@ -125,8 +125,8 @@ fn capture_primary_monitor_blocking(output_dir: &Path) -> Result<CapturedFrame, 
 
         Ok(CapturedFrame {
             record,
-            width: primary.width(),
-            height: primary.height(),
+            width: primary.width().unwrap_or(0),
+            height: primary.height().unwrap_or(0),
             elapsed,
         })
     }
