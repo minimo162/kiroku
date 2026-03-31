@@ -81,7 +81,7 @@ jobs:
         run: npm run tauri build
 
       - name: Sign MSI with Trusted Signing
-        if: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' && vars.TRUSTED_SIGNING_ENDPOINT != '' && vars.TRUSTED_SIGNING_ACCOUNT_NAME != '' && vars.TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME != '' }}
+        if: vars.TRUSTED_SIGNING_ENDPOINT != ''
         uses: azure/trusted-signing-action@v0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -94,7 +94,7 @@ jobs:
           files-folder-filter: msi
 
       - name: Verify MSI signature
-        if: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' && vars.TRUSTED_SIGNING_ENDPOINT != '' && vars.TRUSTED_SIGNING_ACCOUNT_NAME != '' && vars.TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME != '' }}
+        if: vars.TRUSTED_SIGNING_ENDPOINT != ''
         shell: pwsh
         run: |
           $msi = Get-ChildItem -Path "src-tauri/target/release/bundle/msi" -Filter "*.msi" | Select-Object -First 1
