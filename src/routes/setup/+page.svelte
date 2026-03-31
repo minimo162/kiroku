@@ -2,47 +2,30 @@
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
-  import { listen } from "@tauri-apps/api/event";
-  import type {
-    ModelDownloadProgress,
-    ModelDownloadResult,
-    SetupStatus
-  } from "$lib/types/setup";
+  import type { SetupStatus } from "$lib/types/setup";
 
-  type Step = "welcome" | "model-download" | "test-capture" | "complete";
+  type Step = "welcome" | "edge-setup" | "test-capture" | "complete";
 
   const emptyStatus: SetupStatus = {
     setup_complete: false,
-    model_ready: false,
-    llama_server_available: false,
-    models_dir: "",
-    model_path: null,
-    mmproj_path: null
+    engine_ready: false,
+    node_available: false,
+    copilot_server_available: false,
+    edge_debugging_ready: false,
+    edge_debugging_url: "http://127.0.0.1:9222/json/version"
   };
 
   let currentStep = $state<Step>("welcome");
   let status = $state<SetupStatus>({ ...emptyStatus });
-  let downloadProgress = $state<ModelDownloadProgress | null>(null);
   let loading = $state(true);
-  let downloading = $state(false);
   let completing = $state(false);
   let testingCapture = $state(false);
   let message = $state<string | null>(null);
   let testCaptureMessage = $state<string | null>(null);
   let tauriAvailable = $state(false);
-  let showChecksumDialog = $state(false);
-  let checksumFailedFile = $state("");
 
   const isTauri = () =>
     typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-
-  function formatDownloadError(error: unknown) {
-    const text = error instanceof Error ? error.message : String(error);
-    if (text.includes("checksum verification failed")) {
-      return "ファイルの整合性チェックに失敗しました。社内プロキシやネットワーク環境が原因の可能性があります。";
-    }
-    return text;
-  }
 
   async function loadStatus() {
     if (!isTauri()) {
@@ -51,49 +34,26 @@
     }
 
     status = await invoke<SetupStatus>("get_setup_status");
-    if (status.model_ready) {
-      currentStep = "test-capture";
-    }
     if (status.setup_complete) {
       currentStep = "complete";
+    } else if (status.edge_debugging_ready) {
+      currentStep = "test-capture";
+    } else {
+      currentStep = "edge-setup";
     }
     loading = false;
   }
 
-  async function startModelDownload() {
-    if (!isTauri()) return;
-
-    downloading = true;
+  async function refreshPrerequisites() {
     message = null;
-    currentStep = "model-download";
-    try {
-      await invoke<ModelDownloadResult>("download_model", { skipChecksum: false });
-      await loadStatus();
-      currentStep = "test-capture";
-      message = "モデルファイルの準備が完了しました。";
-    } catch (error) {
-      message = formatDownloadError(error);
-    } finally {
-      downloading = false;
-    }
-  }
-
-  async function retryWithSkipChecksum() {
-    if (!isTauri()) return;
-
-    showChecksumDialog = false;
-    downloading = true;
-    message = null;
-    currentStep = "model-download";
-    try {
-      await invoke<ModelDownloadResult>("download_model", { skipChecksum: true });
-      await loadStatus();
-      currentStep = "test-capture";
-      message = "モデルファイルの準備が完了しました。";
-    } catch (error) {
-      message = formatDownloadError(error);
-    } finally {
-      downloading = false;
+    await loadStatus();
+    if (!status.engine_ready) {
+      message = "Copilot ブリッジの起動要件を満たしていません。Node.js と copilot_server.js を確認してください。";
+    } else if (!status.edge_debugging_ready) {
+      message =
+        "Edge のリモートデバッグ接続を確認できませんでした。--remote-debugging-port=9222 付きで起動してから再試行してください。";
+    } else {
+      message = "Copilot 接続の前提条件を確認できました。";
     }
   }
 
@@ -134,33 +94,7 @@
 
     if (!tauriAvailable) {
       message = "ブラウザプレビューでは初回セットアップを実行できません。";
-      return;
     }
-
-    let disposed = false;
-    let progressUnlisten: (() => void) | undefined;
-    let checksumUnlisten: (() => void) | undefined;
-
-    void (async () => {
-      progressUnlisten = await listen<ModelDownloadProgress>("model-download-progress", (event) => {
-        if (!disposed) {
-          downloadProgress = event.payload;
-        }
-      });
-
-      checksumUnlisten = await listen<string>("checksum-retry-exhausted", (event) => {
-        if (!disposed) {
-          checksumFailedFile = event.payload;
-          showChecksumDialog = true;
-        }
-      });
-    })();
-
-    return () => {
-      disposed = true;
-      progressUnlisten?.();
-      checksumUnlisten?.();
-    };
   });
 </script>
 
@@ -175,9 +109,9 @@
         <div class="inline-flex items-center rounded-full border border-brass-200 bg-brass-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-brass-700">
           セットアップ
         </div>
-        <h1 class="text-4xl font-bold text-ink-900">Kiroku の初回セットアップ</h1>
+        <h1 class="text-4xl font-bold text-ink-900">Copilot 連携を準備します</h1>
         <p class="max-w-2xl text-sm leading-7 text-ink-500 sm:text-base">
-          AI エンジンのダウンロード、動作確認、初期設定の 3 ステップで準備を進めます。
+          Kiroku は Microsoft Copilot を分析エンジンとして使用します。Edge のリモートデバッグ起動と M365 ログインだけ確認すれば利用できます。
         </p>
       </div>
 
@@ -185,16 +119,18 @@
         <p class="text-xs font-semibold uppercase tracking-[0.24em] text-white/60">現在の状態</p>
         <div class="mt-4 grid gap-3 sm:grid-cols-2">
           <div class="rounded-2xl bg-white/8 px-4 py-4">
-            <p class="text-xs uppercase tracking-[0.2em] text-white/50">モデル</p>
-            <p class="mt-2 text-lg font-semibold">{status.model_ready ? "準備完了" : "未配置"}</p>
+            <p class="text-xs uppercase tracking-[0.2em] text-white/50">ブリッジ</p>
+            <p class="mt-2 text-lg font-semibold">{status.engine_ready ? "準備完了" : "確認待ち"}</p>
           </div>
           <div class="rounded-2xl bg-white/8 px-4 py-4">
-            <p class="text-xs uppercase tracking-[0.2em] text-white/50">分析エンジン</p>
-            <p class="mt-2 text-lg font-semibold">{status.llama_server_available ? "検出済み" : "未検出"}</p>
+            <p class="text-xs uppercase tracking-[0.2em] text-white/50">Edge デバッグ</p>
+            <p class="mt-2 text-lg font-semibold">
+              {status.edge_debugging_ready ? "接続可能" : "未接続"}
+            </p>
           </div>
         </div>
         <p class="mt-4 text-sm leading-7 text-white/75">
-          モデル保存先: <span class="font-medium text-white">{status.models_dir || "未解決"}</span>
+          確認先: <span class="font-medium text-white">{status.edge_debugging_url}</span>
         </p>
       </div>
     </div>
@@ -205,8 +141,8 @@
       <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">手順</p>
       <div class="mt-5 space-y-3">
         {#each [
-          { id: "welcome", title: "1. ダウンロード準備" },
-          { id: "model-download", title: "2. ダウンロード中" },
+          { id: "welcome", title: "1. 連携概要" },
+          { id: "edge-setup", title: "2. Edge 準備" },
           { id: "test-capture", title: "3. 動作確認" },
           { id: "complete", title: "4. 完了" }
         ] as step}
@@ -232,66 +168,64 @@
         <div class="space-y-5">
           <div>
             <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">ようこそ</p>
-            <h2 class="mt-2 text-3xl font-bold text-ink-900">AI エンジンを準備します</h2>
+            <h2 class="mt-2 text-3xl font-bold text-ink-900">ローカルモデルは不要です</h2>
           </div>
           <p class="text-sm leading-7 text-ink-500">
-            画面を読み取る AI エンジンをダウンロードします。ダウンロード済みなら再取得しません。
+            この構成では追加のローカル推論サーバーは不要です。Node.js 同梱の Copilot ブリッジが、ログイン済みの Edge に接続して分析を行います。
           </p>
-          <button
-            class="rounded-full bg-ink-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-60"
-            onclick={startModelDownload}
-            disabled={!tauriAvailable || downloading}
-          >
-            {downloading ? "準備中..." : "モデル準備を開始"}
-          </button>
+          <div class="flex flex-wrap gap-3">
+            <button
+              class="rounded-full bg-ink-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-ink-700"
+              onclick={() => {
+                currentStep = "edge-setup";
+              }}
+            >
+              次へ進む
+            </button>
+          </div>
         </div>
-      {:else if currentStep === "model-download"}
+      {:else if currentStep === "edge-setup"}
         <div class="space-y-5">
           <div>
-            <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">ダウンロード</p>
-            <h2 class="mt-2 text-3xl font-bold text-ink-900">モデルをダウンロード中</h2>
+            <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">Edge 準備</p>
+            <h2 class="mt-2 text-3xl font-bold text-ink-900">Edge をデバッグ起動します</h2>
           </div>
-          <div class="rounded-[1.5rem] border border-ink-100 bg-ink-50/70 px-5 py-5">
-            <p class="text-sm font-semibold text-ink-900">{downloadProgress?.file_name ?? "接続待ち"}</p>
-            <div class="mt-4 h-3 overflow-hidden rounded-full bg-ink-100">
-              <div
-                class="h-full rounded-full bg-gradient-to-r from-brass-500 to-cinnabar-500 transition-all duration-300"
-                style={`width: ${downloadProgress?.percent ?? 0}%`}
-              ></div>
-            </div>
-            <div class="mt-4 grid gap-3 sm:grid-cols-3">
-              <div class="rounded-2xl border border-white bg-white px-4 py-4">
-                <p class="text-xs uppercase tracking-[0.2em] text-ink-400">進捗</p>
-                <p class="mt-2 text-xl font-semibold text-ink-900">
-                  {downloadProgress ? `${Math.round(downloadProgress.percent)}%` : "-"}
-                </p>
-              </div>
-              <div class="rounded-2xl border border-white bg-white px-4 py-4">
-                <p class="text-xs uppercase tracking-[0.2em] text-ink-400">速度</p>
-                <p class="mt-2 text-sm font-semibold text-ink-900">{downloadProgress?.speed ?? "-"}</p>
-              </div>
-              <div class="rounded-2xl border border-white bg-white px-4 py-4">
-                <p class="text-xs uppercase tracking-[0.2em] text-ink-400">残り</p>
-                <p class="mt-2 text-sm font-semibold text-ink-900">{downloadProgress?.remaining ?? "計算中"}</p>
-              </div>
-            </div>
+          <div class="rounded-[1.5rem] border border-ink-100 bg-ink-50/70 px-5 py-5 text-sm leading-7 text-ink-600">
+            <ol class="list-decimal space-y-2 pl-5">
+              <li>Edge を `--remote-debugging-port=9222` 付きで起動</li>
+              <li>`https://m365.cloud.microsoft/chat/` を開いて M365 にログイン</li>
+              <li>必要なら設定画面で Edge CDP ポートを変更</li>
+            </ol>
+            <p class="mt-4">
+              確認先 URL:
+              <span class="font-medium text-ink-900">{status.edge_debugging_url}</span>
+            </p>
           </div>
-          <button
-            class="rounded-full border border-ink-200 bg-white px-5 py-3 text-sm font-semibold text-ink-700 transition hover:border-brass-300 hover:text-brass-700 disabled:cursor-not-allowed disabled:opacity-60"
-            onclick={startModelDownload}
-            disabled={!tauriAvailable || downloading}
-          >
-            {downloading ? "ダウンロード中..." : "再試行"}
-          </button>
+          <div class="flex flex-wrap gap-3">
+            <button
+              class="rounded-full bg-ink-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-ink-700"
+              onclick={refreshPrerequisites}
+            >
+              接続を確認
+            </button>
+            <button
+              class="rounded-full border border-ink-200 bg-white px-5 py-3 text-sm font-semibold text-ink-700 transition hover:border-brass-300 hover:text-brass-700"
+              onclick={() => {
+                currentStep = "test-capture";
+              }}
+            >
+              確認をスキップ
+            </button>
+          </div>
         </div>
       {:else if currentStep === "test-capture"}
         <div class="space-y-5">
           <div>
             <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">動作確認</p>
-            <h2 class="mt-2 text-3xl font-bold text-ink-900">動作確認を行います</h2>
+            <h2 class="mt-2 text-3xl font-bold text-ink-900">キャプチャ動作を確認します</h2>
           </div>
           <p class="text-sm leading-7 text-ink-500">
-            ダウンロードが完了しました。画面キャプチャが正常に動作するかテストします。
+            最後にテストキャプチャを実行して、Kiroku の基本動作を確認します。Copilot の説明文生成はダッシュボードからバッチ実行時に確認できます。
           </p>
           {#if testCaptureMessage}
             <div class="rounded-[1.25rem] border border-brass-100 bg-brass-50 px-4 py-3 text-sm text-brass-800">
@@ -304,7 +238,7 @@
               onclick={runTestCapture}
               disabled={!tauriAvailable || testingCapture}
             >
-              {testingCapture ? "確認中..." : "動作確認を実行"}
+              {testingCapture ? "確認中..." : "テストキャプチャを実行"}
             </button>
             <button
               class="rounded-full border border-ink-200 bg-white px-5 py-3 text-sm font-semibold text-ink-700 transition hover:border-brass-300 hover:text-brass-700"
@@ -320,23 +254,17 @@
         <div class="space-y-5">
           <div>
             <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">完了</p>
-            <h2 class="mt-2 text-3xl font-bold text-ink-900">セットアップを完了します</h2>
+            <h2 class="mt-2 text-3xl font-bold text-ink-900">Copilot 構成で開始します</h2>
           </div>
-          <p class="text-sm leading-7 text-ink-500">
-            完了すると、次回からダッシュボードに直接入ります。
-          </p>
           <div class="rounded-[1.5rem] border border-ink-100 bg-ink-50/70 px-5 py-5 text-sm leading-7 text-ink-600">
-            <p><span class="font-semibold text-ink-900">モデル:</span> {status.model_path ?? "未配置"}</p>
-            <p><span class="font-semibold text-ink-900">画像認識モジュール:</span> {status.mmproj_path ?? "未配置"}</p>
-            <p>
-              <span class="font-semibold text-ink-900">分析エンジン:</span>
-              {status.llama_server_available ? " 検出済み" : " 未検出"}
-            </p>
+            <p><span class="font-semibold text-ink-900">Node.js:</span> {status.node_available ? " 検出済み" : " 未検出"}</p>
+            <p><span class="font-semibold text-ink-900">Copilot ブリッジ:</span> {status.copilot_server_available ? " 配置済み" : " 未配置"}</p>
+            <p><span class="font-semibold text-ink-900">Edge デバッグ:</span> {status.edge_debugging_ready ? " 接続可能" : " 未接続"}</p>
           </div>
           <button
             class="rounded-full bg-ink-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-60"
             onclick={finishSetup}
-            disabled={!tauriAvailable || completing || !status.model_ready}
+            disabled={!tauriAvailable || completing || !status.engine_ready}
           >
             {completing ? "保存中..." : "セットアップ完了"}
           </button>
@@ -351,30 +279,3 @@
     </article>
   </div>
 </section>
-
-{#if showChecksumDialog}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-    <div class="mx-4 max-w-md rounded-xl bg-white p-6 shadow-2xl">
-      <h3 class="text-lg font-semibold text-ink-900">整合性チェック失敗</h3>
-      <p class="mt-2 text-sm text-ink-600">
-        「{checksumFailedFile}」のファイル整合性チェックに失敗しました。社内プロキシやネットワーク環境が原因の可能性があります。検証をスキップしてダウンロードを完了しますか？
-      </p>
-      <div class="mt-4 flex justify-end gap-3">
-        <button
-          class="rounded-lg border border-ink-200 px-4 py-2 text-sm text-ink-700 hover:bg-ink-50"
-          onclick={() => {
-            showChecksumDialog = false;
-          }}
-        >
-          キャンセル
-        </button>
-        <button
-          class="rounded-lg bg-brass-600 px-4 py-2 text-sm text-white hover:bg-brass-500"
-          onclick={retryWithSkipChecksum}
-        >
-          スキップして続行
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}

@@ -11,7 +11,10 @@ use crate::{
     models::AppConfig,
     recorder::{start_recording_inner, stop_recording_inner},
     state::AppState,
-    vlm::server::{parse_host_and_port, LlamaServer, VlmError},
+    vlm::{
+        copilot_server::CopilotServer,
+        server::{parse_host_and_port, LlamaServer, VlmError},
+    },
 };
 
 pub const CONFIG_FILE_NAME: &str = "config.json";
@@ -69,6 +72,7 @@ pub fn load_config(path: &Path, default_data_dir: &Path) -> Result<AppConfig, Co
     let mut config: AppConfig = serde_json::from_str(&contents)?;
 
     config.ensure_data_dir(default_data_dir);
+    config.vlm_engine = "copilot".to_string();
 
     Ok(config)
 }
@@ -122,9 +126,12 @@ pub async fn save_config_command(
     if next_config.data_dir.trim().is_empty() {
         next_config.ensure_data_dir(&state.app_paths.data_dir);
     }
+    next_config.vlm_engine = "copilot".to_string();
 
     let next_server = LlamaServer::from_config(&next_config, &state.app_paths)
         .map_err(|error| error.to_string())?;
+    let next_copilot_server =
+        CopilotServer::new(&next_config, &state.app_paths).map_err(|error| error.to_string())?;
 
     save_config(&state.app_paths.config_path, &next_config).map_err(|error| error.to_string())?;
 
@@ -143,6 +150,11 @@ pub async fn save_config_command(
         let mut server = state.vlm_server.lock().await;
         let _ = server.stop();
         *server = next_server;
+    }
+    {
+        let mut server = state.copilot_server.lock().await;
+        let _ = server.stop();
+        *server = next_copilot_server;
     }
     {
         let mut vlm_state = state.vlm_state.lock().await;

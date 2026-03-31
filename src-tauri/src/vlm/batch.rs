@@ -11,8 +11,12 @@ use tokio::{
 
 use crate::{
     capture::remove_capture_artifacts,
-    db::{get_unprocessed, mark_processed, update_description},
-    models::VlmBatchProgress,
+    db::{
+        clear_image_path, get_unprocessed, get_unprocessed_sessions, mark_processed,
+        mark_session_processed, update_description,
+    },
+    models::{AppConfig, VlmBatchProgress},
+    session::process_pending_sessions,
     state::AppState,
     vlm::{
         inference::{describe_screenshot, PromptContext},
@@ -26,6 +30,7 @@ use crate::{
 #[derive(Debug, Clone)]
 struct BatchOptions {
     auto_delete: bool,
+    vlm_engine: String,
     model_path: Option<String>,
     mmproj_path: Option<String>,
     n_threads: usize,
@@ -91,10 +96,12 @@ pub async fn run_vlm_batch_inner(
         }
     }
 
+    let config_snapshot = state.config.lock().await.clone();
     let auto_delete = match request.auto_delete {
         Some(value) => value,
-        None => state.config.lock().await.auto_delete_images,
+        None => config_snapshot.auto_delete_images,
     };
+    let vlm_engine = config_snapshot.vlm_engine.clone();
     let requested_concurrency = request.max_concurrency.unwrap_or(1).max(1);
     if requested_concurrency > 1 {
         eprintln!(
@@ -105,7 +112,8 @@ pub async fn run_vlm_batch_inner(
     let mut model_path = request.model_path;
     let mut mmproj_path = request.mmproj_path;
     let server_running = { state.vlm_state.lock().await.server_running };
-    if !server_running && (model_path.is_none() || mmproj_path.is_none()) {
+    if vlm_engine != "copilot" && !server_running && (model_path.is_none() || mmproj_path.is_none())
+    {
         if let Some((resolved_model_path, resolved_mmproj_path)) =
             resolve_model_paths(&state.app_paths)
         {
@@ -131,6 +139,7 @@ pub async fn run_vlm_batch_inner(
 
     let options = BatchOptions {
         auto_delete,
+        vlm_engine,
         model_path,
         mmproj_path,
         n_threads: request.n_threads.unwrap_or_else(default_thread_count),
@@ -202,7 +211,7 @@ async fn vlm_batch_loop(
     mut pause_rx: watch::Receiver<bool>,
     options: BatchOptions,
 ) {
-    if let Err(error) = ensure_vlm_server_running(&app, &state, &options).await {
+    if let Err(error) = ensure_engine_running(&app, &state, &options).await {
         finish_batch(
             &app,
             &state,
@@ -217,6 +226,12 @@ async fn vlm_batch_loop(
             &options,
         )
         .await;
+        return;
+    }
+
+    let config = state.config.lock().await.clone();
+    if options.vlm_engine == "copilot" && config.session_enabled {
+        run_session_batch_loop(app, state, cancel_rx, pause_rx, options, config).await;
         return;
     }
 
@@ -276,9 +291,10 @@ async fn vlm_batch_loop(
     let client = Client::new();
     let config = state.config.lock().await.clone();
     let max_tokens = config.vlm_max_tokens;
-    let server_url = {
-        let server = state.vlm_server.lock().await;
-        server.server_url()
+    let server_url = if options.vlm_engine == "copilot" {
+        state.copilot_server.lock().await.server_url()
+    } else {
+        state.vlm_server.lock().await.server_url()
     };
 
     let mut completed = 0;
@@ -369,15 +385,23 @@ async fn vlm_batch_loop(
             }
             Err(error) => {
                 if matches!(&error, VlmError::Http(_)) {
-                    let health = {
+                    let health = if options.vlm_engine == "copilot" {
+                        let server = state.copilot_server.lock().await;
+                        server.health_check().await
+                    } else {
                         let server = state.vlm_server.lock().await;
                         server.health_check().await
                     };
 
                     if health.is_err() {
+                        let engine_name = if options.vlm_engine == "copilot" {
+                            "Copilot"
+                        } else {
+                            "llama-server"
+                        };
                         if server_restarted {
                             eprintln!(
-                                "llama-server appears to have crashed again during batch processing"
+                                "{engine_name} appears to have crashed again during batch processing"
                             );
                             finish_batch(
                                 &app,
@@ -389,21 +413,25 @@ async fn vlm_batch_loop(
                                     cancelled: false,
                                     error: None,
                                 },
-                                Some(
-                                    "分析エンジンが再起動後も停止しました。llama-server.log を確認してください。"
-                                        .to_string(),
-                                ),
+                                Some(format!(
+                                    "分析エンジンが再起動後も停止しました。{} を確認してください。",
+                                    if options.vlm_engine == "copilot" {
+                                        "copilot-server.log"
+                                    } else {
+                                        "llama-server.log"
+                                    }
+                                )),
                                 &options,
                             )
                             .await;
                             return;
                         }
 
-                        eprintln!("llama-server appears to have crashed, attempting restart...");
+                        eprintln!("{engine_name} appears to have crashed, attempting restart...");
                         if let Err(restart_error) =
-                            ensure_vlm_server_running(&app, &state, &options).await
+                            ensure_engine_running(&app, &state, &options).await
                         {
-                            eprintln!("failed to restart llama-server: {restart_error}");
+                            eprintln!("failed to restart {engine_name}: {restart_error}");
                             finish_batch(
                                 &app,
                                 &state,
@@ -445,7 +473,235 @@ async fn vlm_batch_loop(
     finish_batch(&app, &state, result, None, &options).await;
 }
 
-async fn ensure_vlm_server_running(
+async fn run_session_batch_loop(
+    app: AppHandle,
+    state: AppState,
+    mut cancel_rx: watch::Receiver<bool>,
+    mut pause_rx: watch::Receiver<bool>,
+    options: BatchOptions,
+    config: AppConfig,
+) {
+    {
+        let db = state.db.lock().await;
+        if let Err(error) = process_pending_sessions(&db, &config) {
+            finish_batch(
+                &app,
+                &state,
+                BatchResult {
+                    total: 0,
+                    completed: 0,
+                    failed: 0,
+                    cancelled: false,
+                    error: None,
+                },
+                Some(error.to_string()),
+                &options,
+            )
+            .await;
+            return;
+        }
+    }
+
+    let unprocessed = {
+        let db = state.db.lock().await;
+        match get_unprocessed_sessions(&db) {
+            Ok(sessions) => sessions,
+            Err(error) => {
+                finish_batch(
+                    &app,
+                    &state,
+                    BatchResult {
+                        total: 0,
+                        completed: 0,
+                        failed: 0,
+                        cancelled: false,
+                        error: None,
+                    },
+                    Some(error.to_string()),
+                    &options,
+                )
+                .await;
+                return;
+            }
+        }
+    };
+
+    let total = unprocessed.len();
+    emit_progress(
+        &app,
+        &state,
+        VlmBatchProgress {
+            total,
+            completed: 0,
+            failed: 0,
+            current_id: None,
+            estimated_remaining_secs: if total == 0 { Some(0) } else { None },
+        },
+    )
+    .await;
+
+    if total == 0 {
+        finish_batch(
+            &app,
+            &state,
+            BatchResult {
+                total: 0,
+                completed: 0,
+                failed: 0,
+                cancelled: false,
+                error: None,
+            },
+            None,
+            &options,
+        )
+        .await;
+        return;
+    }
+
+    let client = reqwest::Client::new();
+    let server_url = state.copilot_server.lock().await.server_url();
+    let mut completed = 0;
+    let mut failed = 0;
+    let mut elapsed_times = Vec::new();
+
+    for session in &unprocessed {
+        if should_stop(&cancel_rx) {
+            break;
+        }
+        if let Err(error) = wait_if_paused(&mut cancel_rx, &mut pause_rx).await {
+            finish_batch(
+                &app,
+                &state,
+                BatchResult {
+                    total,
+                    completed,
+                    failed,
+                    cancelled: true,
+                    error: None,
+                },
+                Some(error.to_string()),
+                &options,
+            )
+            .await;
+            return;
+        }
+
+        emit_progress(
+            &app,
+            &state,
+            VlmBatchProgress {
+                total,
+                completed,
+                failed,
+                current_id: Some(session.id.clone()),
+                estimated_remaining_secs: estimate_remaining_secs(&elapsed_times, total, completed),
+            },
+        )
+        .await;
+
+        let collage_path = match session.collage_path.as_deref() {
+            Some(path) => path.to_string(),
+            None => {
+                failed += 1;
+                continue;
+            }
+        };
+
+        let duration_min = calc_duration_min(&session.start_time, &session.end_time);
+        let user_prompt = config
+            .session_user_prompt
+            .replace("{start_time}", &format_time_hhmm(&session.start_time))
+            .replace("{end_time}", &format_time_hhmm(&session.end_time))
+            .replace("{duration_min}", &duration_min.to_string())
+            .replace("{frame_count}", &session.frame_count.to_string());
+
+        let started_at = Instant::now();
+        let result = describe_screenshot(
+            &client,
+            Path::new(&collage_path),
+            &server_url,
+            config.vlm_max_tokens,
+            PromptContext {
+                app: None,
+                window_title: None,
+                system_prompt: Some(&config.system_prompt),
+                user_prompt: Some(&user_prompt),
+            },
+        )
+        .await;
+
+        match result {
+            Ok(description) => {
+                let db = state.db.lock().await;
+                let _ = mark_session_processed(&db, &session.id, &description);
+
+                if let Ok(capture_ids) = get_capture_ids_for_session(&db, &session.id) {
+                    for capture_id in &capture_ids {
+                        let _ = update_description(&db, capture_id, &description);
+                        let _ = mark_processed(&db, capture_id);
+                    }
+
+                    if config.auto_delete_images {
+                        for capture_id in &capture_ids {
+                            if let Ok(Some(image_path)) = get_capture_image_path(&db, capture_id) {
+                                let _ = std::fs::remove_file(&image_path);
+                                let _ = clear_image_path(&db, capture_id);
+                            }
+                        }
+                    }
+                }
+
+                elapsed_times.push(started_at.elapsed().as_secs());
+                completed += 1;
+            }
+            Err(error) => {
+                eprintln!("session {} description failed: {}", session.id, error);
+                failed += 1;
+            }
+        }
+    }
+
+    finish_batch(
+        &app,
+        &state,
+        BatchResult {
+            total,
+            completed,
+            failed,
+            cancelled: should_stop(&cancel_rx),
+            error: None,
+        },
+        None,
+        &options,
+    )
+    .await;
+}
+
+async fn ensure_engine_running(
+    app: &AppHandle,
+    state: &AppState,
+    options: &BatchOptions,
+) -> Result<(), VlmError> {
+    if options.vlm_engine == "copilot" {
+        let data_dir = state.app_paths.data_dir.clone();
+        let snapshot = refresh_vlm_state(state).await;
+        if snapshot.server_running {
+            return Ok(());
+        }
+
+        let mut server = state.copilot_server.lock().await;
+        server.start(&data_dir).await?;
+        drop(server);
+
+        let snapshot = update_vlm_state(state, Some(true), None, None).await;
+        let _ = app.emit("vlm-status", &snapshot);
+        Ok(())
+    } else {
+        ensure_llama_server_running(app, state, options).await
+    }
+}
+
+async fn ensure_llama_server_running(
     app: &AppHandle,
     state: &AppState,
     options: &BatchOptions,
@@ -492,7 +748,10 @@ async fn finish_batch(
 ) {
     clear_batch_controls(state).await;
     let stop_error = if options.stop_server_when_done {
-        let result = {
+        let result = if options.vlm_engine == "copilot" {
+            let mut server = state.copilot_server.lock().await;
+            server.stop()
+        } else {
             let mut server = state.vlm_server.lock().await;
             server.stop()
         };
@@ -595,6 +854,49 @@ async fn wait_if_paused(
 
 fn should_stop(cancel_rx: &watch::Receiver<bool>) -> bool {
     *cancel_rx.borrow()
+}
+
+fn get_capture_ids_for_session(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<Vec<String>, rusqlite::Error> {
+    let mut stmt =
+        conn.prepare("SELECT id FROM captures WHERE session_id = ?1 ORDER BY timestamp ASC")?;
+    let rows = stmt.query_map(rusqlite::params![session_id], |row| row.get(0))?;
+    rows.collect()
+}
+
+fn get_capture_image_path(
+    conn: &rusqlite::Connection,
+    capture_id: &str,
+) -> Result<Option<String>, rusqlite::Error> {
+    conn.query_row(
+        "SELECT image_path FROM captures WHERE id = ?1",
+        rusqlite::params![capture_id],
+        |row| row.get(0),
+    )
+}
+
+fn calc_duration_min(start: &str, end: &str) -> i64 {
+    use chrono::DateTime;
+
+    let Ok(start) = DateTime::parse_from_rfc3339(start) else {
+        return 0;
+    };
+    let Ok(end) = DateTime::parse_from_rfc3339(end) else {
+        return 0;
+    };
+
+    (end - start).num_minutes().max(0)
+}
+
+fn format_time_hhmm(ts: &str) -> String {
+    use chrono::DateTime;
+
+    let Ok(timestamp) = DateTime::parse_from_rfc3339(ts) else {
+        return ts.to_string();
+    };
+    timestamp.format("%H:%M").to_string()
 }
 
 fn estimate_remaining_secs(elapsed_times: &[u64], total: usize, completed: usize) -> Option<u64> {

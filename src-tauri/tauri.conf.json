@@ -29,8 +29,8 @@
   "bundle": {
     "active": true,
     "targets": ["msi"],
-    "externalBin": ["binaries/llama-server"],
-    "resources": ["binaries/*.dll"],
+    "externalBin": [],
+    "resources": ["binaries/*"],
     "category": "Productivity",
     "shortDescription": "業務画面の記録を支援するデスクトップアプリ",
     "longDescription": "Kiroku はスクリーンショット記録とローカル AI 処理を前提にした Windows 向けの業務記録アプリです。",

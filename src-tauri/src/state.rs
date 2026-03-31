@@ -10,7 +10,10 @@ use crate::{
     config::{load_or_create_config_for_manager, AppPaths, ConfigError},
     db::{initialize_db, DbError},
     models::{AppConfig, CaptureStats, VlmBatchProgress, VlmState},
-    vlm::server::{LlamaServer, VlmError},
+    vlm::{
+        copilot_server::CopilotServer,
+        server::{LlamaServer, VlmError},
+    },
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -33,6 +36,7 @@ pub struct AppState {
     pub vlm_progress: Arc<Mutex<VlmBatchProgress>>,
     pub next_batch_run_at: Arc<Mutex<Option<String>>>,
     pub vlm_server: Arc<Mutex<LlamaServer>>,
+    pub copilot_server: Arc<Mutex<CopilotServer>>,
     pub vlm_batch_stop_signal: Arc<Mutex<Option<watch::Sender<bool>>>>,
     pub vlm_batch_pause_signal: Arc<Mutex<Option<watch::Sender<bool>>>>,
     pub vlm_batch_task: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -48,6 +52,7 @@ impl AppState {
         let (config, app_paths) = load_or_create_config_for_manager(manager)?;
         let db = initialize_db(&app_paths.db_path)?;
         let vlm_server = LlamaServer::from_config(&config, &app_paths)?;
+        let copilot_server = CopilotServer::new(&config, &app_paths)?;
         let (config_tx, _) = watch::channel(config.clone());
 
         Ok(Self {
@@ -59,6 +64,7 @@ impl AppState {
             vlm_progress: Arc::new(Mutex::new(VlmBatchProgress::default())),
             next_batch_run_at: Arc::new(Mutex::new(None)),
             vlm_server: Arc::new(Mutex::new(vlm_server)),
+            copilot_server: Arc::new(Mutex::new(copilot_server)),
             vlm_batch_stop_signal: Arc::new(Mutex::new(None)),
             vlm_batch_pause_signal: Arc::new(Mutex::new(None)),
             vlm_batch_task: Arc::new(Mutex::new(None)),
@@ -75,6 +81,10 @@ impl AppState {
             let mut server = self.vlm_server.lock().await;
             server.stop()
         };
+        {
+            let mut server = self.copilot_server.lock().await;
+            let _ = server.stop();
+        }
 
         let mut vlm_state = self.vlm_state.lock().await;
         vlm_state.server_running = false;

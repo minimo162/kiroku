@@ -36,14 +36,22 @@ pub struct AppConfig {
     pub capture_interval_secs: u64,
     pub dhash_threshold: u32,
     pub auto_delete_images: bool,
+    pub session_enabled: bool,
+    pub session_gap_secs: u64,
+    pub session_window_secs: u64,
+    pub max_frames_per_collage: u32,
     pub scheduler_enabled: bool,
     pub setup_complete: bool,
     pub batch_time: String,
+    pub vlm_engine: String,
     pub vlm_host: String,
     pub vlm_max_tokens: u32,
+    pub copilot_port: u16,
+    pub edge_cdp_port: u16,
     pub data_dir: String,
     pub system_prompt: String,
     pub user_prompt: String,
+    pub session_user_prompt: String,
     pub mask_rules: Vec<MaskRule>,
 }
 
@@ -53,14 +61,22 @@ impl Default for AppConfig {
             capture_interval_secs: 30,
             dhash_threshold: 10,
             auto_delete_images: true,
+            session_enabled: true,
+            session_gap_secs: 600,
+            session_window_secs: 300,
+            max_frames_per_collage: 6,
             scheduler_enabled: true,
             setup_complete: false,
             batch_time: "22:00".to_string(),
+            vlm_engine: "copilot".to_string(),
             vlm_host: "127.0.0.1:8080".to_string(),
             vlm_max_tokens: 256,
+            copilot_port: 18080,
+            edge_cdp_port: 9222,
             data_dir: String::new(),
             system_prompt: default_system_prompt(),
             user_prompt: default_user_prompt(),
+            session_user_prompt: default_session_user_prompt(),
             mask_rules: Vec::new(),
         }
     }
@@ -103,6 +119,19 @@ pub fn default_user_prompt() -> String {
     .to_string()
 }
 
+pub fn default_session_user_prompt() -> String {
+    concat!(
+        "これは {start_time} から {end_time} の間（{duration_min}分間）の",
+        "業務画面の流れです。{frame_count} 枚のスクリーンショットを",
+        "時系列順に並べたコラージュを見て、この間に行っていた業務操作を",
+        "1〜3文で説明してください。必ず次の観点を含めてください: ",
+        "使用中のアプリケーション、実行している操作の流れ、",
+        "表示されているデータや対象。",
+        "出力は自然な日本語の文章のみとし、箇条書きや JSON は使わないでください。"
+    )
+    .to_string()
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaptureStats {
     pub total_captures: u64,
@@ -129,7 +158,10 @@ pub struct VlmBatchProgress {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_system_prompt, default_user_prompt, AppConfig, CaptureRecord, MaskRule};
+    use super::{
+        default_session_user_prompt, default_system_prompt, default_user_prompt, AppConfig,
+        CaptureRecord, MaskRule,
+    };
 
     #[test]
     fn app_config_roundtrip_json() {
@@ -137,14 +169,22 @@ mod tests {
             capture_interval_secs: 45,
             dhash_threshold: 12,
             auto_delete_images: false,
+            session_enabled: true,
+            session_gap_secs: 600,
+            session_window_secs: 300,
+            max_frames_per_collage: 6,
             scheduler_enabled: true,
             setup_complete: true,
             batch_time: "23:15".to_string(),
+            vlm_engine: "copilot".to_string(),
             vlm_host: "127.0.0.1:8181".to_string(),
             vlm_max_tokens: 384,
+            copilot_port: 18080,
+            edge_cdp_port: 9222,
             data_dir: "C:\\Users\\tester\\AppData\\Local\\Kiroku".to_string(),
             system_prompt: default_system_prompt(),
             user_prompt: default_user_prompt(),
+            session_user_prompt: default_session_user_prompt(),
             mask_rules: vec![MaskRule {
                 pattern: "株式会社A".to_string(),
                 replacement: "[取引先]".to_string(),

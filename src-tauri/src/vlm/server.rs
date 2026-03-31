@@ -228,6 +228,13 @@ pub async fn start_vlm_server(
     mmproj_path: String,
     n_threads: Option<usize>,
 ) -> Result<VlmState, String> {
+    let vlm_engine = state.config.lock().await.vlm_engine.clone();
+    if vlm_engine == "copilot" {
+        return Err(
+            "Copilot エンジン選択中は手動起動不要です。バッチ実行時に自動起動します。".to_string(),
+        );
+    }
+
     let n_threads = n_threads.unwrap_or_else(default_thread_count);
     let data_dir = state.app_paths.data_dir.clone();
 
@@ -262,9 +269,15 @@ pub async fn stop_vlm_server(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<VlmState, String> {
+    let vlm_engine = state.config.lock().await.vlm_engine.clone();
     let result = {
-        let mut server = state.vlm_server.lock().await;
-        server.stop()
+        if vlm_engine == "copilot" {
+            let mut server = state.copilot_server.lock().await;
+            server.stop()
+        } else {
+            let mut server = state.vlm_server.lock().await;
+            server.stop()
+        }
     };
 
     let snapshot = match result {
@@ -282,7 +295,19 @@ pub async fn stop_vlm_server(
 }
 
 pub async fn refresh_vlm_state(state: &AppState) -> VlmState {
-    let status = {
+    let vlm_engine = state.config.lock().await.vlm_engine.clone();
+    let status = if vlm_engine == "copilot" {
+        let mut server = state.copilot_server.lock().await;
+        let process_running = server.process_running();
+        let healthy = server.health_check().await;
+
+        match (process_running, healthy) {
+            (Ok(_), Ok(())) => (true, None),
+            (Ok(true), Err(error)) => (true, Some(error.to_string())),
+            (Ok(false), Err(error)) => (false, Some(error.to_string())),
+            (Err(error), _) => (false, Some(error.to_string())),
+        }
+    } else {
         let mut server = state.vlm_server.lock().await;
         let process_running = server.process_running();
         let healthy = server.health_check().await;
@@ -615,7 +640,13 @@ mod tests {
         let server = LlamaServer::from_config(&config, &app_paths)
             .expect("server should resolve the sidecar binary");
 
-        assert_eq!(server.binary_path(), Some(binary_path.as_path()));
+        let expected_path = option_env!("CARGO_MANIFEST_DIR")
+            .map(PathBuf::from)
+            .map(|path| path.join("binaries"))
+            .and_then(|path| find_binary_in_dir(&path))
+            .unwrap_or(binary_path);
+
+        assert_eq!(server.binary_path(), Some(expected_path.as_path()));
 
         fs::remove_dir_all(&dir).expect("test directory should be removed");
     }

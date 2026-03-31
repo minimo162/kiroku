@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use crate::models::CaptureRecord;
 
-const DB_SCHEMA_VERSION: i32 = 2;
+const DB_SCHEMA_VERSION: i32 = 3;
 
 #[derive(Debug, Error)]
 pub enum DbError {
@@ -48,6 +48,18 @@ pub struct DescriptionHistoryRecord {
     pub previous_description: Option<String>,
     pub new_description: Option<String>,
     pub edited_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionRecord {
+    pub id: String,
+    pub start_time: String,
+    pub end_time: String,
+    pub collage_path: Option<String>,
+    pub description: Option<String>,
+    pub processed: bool,
+    pub capture_count: i64,
+    pub frame_count: i64,
 }
 
 pub fn initialize_db(db_path: &Path) -> Result<Connection, DbError> {
@@ -135,6 +147,114 @@ pub fn clear_image_path(conn: &Connection, id: &str) -> Result<(), DbError> {
         params![id],
     )?;
     Ok(())
+}
+
+pub fn insert_session(conn: &Connection, record: &SessionRecord) -> Result<(), DbError> {
+    conn.execute(
+        "INSERT INTO sessions (id, start_time, end_time, collage_path, description, processed, capture_count, frame_count)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            record.id,
+            record.start_time,
+            record.end_time,
+            record.collage_path,
+            record.description,
+            record.processed as i64,
+            record.capture_count,
+            record.frame_count,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn get_unprocessed_sessions(conn: &Connection) -> Result<Vec<SessionRecord>, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, start_time, end_time, collage_path, description, processed, capture_count, frame_count
+         FROM sessions
+         WHERE processed = 0
+         ORDER BY start_time ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(SessionRecord {
+            id: row.get(0)?,
+            start_time: row.get(1)?,
+            end_time: row.get(2)?,
+            collage_path: row.get(3)?,
+            description: row.get(4)?,
+            processed: row.get::<_, i64>(5)? != 0,
+            capture_count: row.get(6)?,
+            frame_count: row.get(7)?,
+        })
+    })?;
+    let mut sessions = Vec::new();
+    for row in rows {
+        sessions.push(row?);
+    }
+    Ok(sessions)
+}
+
+pub fn mark_session_processed(
+    conn: &Connection,
+    id: &str,
+    description: &str,
+) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE sessions SET processed = 1, description = ?2 WHERE id = ?1",
+        params![id, description],
+    )?;
+    Ok(())
+}
+
+pub fn assign_session_to_captures(
+    conn: &Connection,
+    capture_ids: &[String],
+    session_id: &str,
+) -> Result<(), DbError> {
+    for id in capture_ids {
+        conn.execute(
+            "UPDATE captures SET session_id = ?2 WHERE id = ?1",
+            params![id, session_id],
+        )?;
+    }
+    Ok(())
+}
+
+pub fn set_session_collage_path(
+    conn: &Connection,
+    id: &str,
+    collage_path: Option<&str>,
+) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE sessions SET collage_path = ?2 WHERE id = ?1",
+        params![id, collage_path],
+    )?;
+    Ok(())
+}
+
+pub fn get_captures_for_session_assembly(conn: &Connection) -> Result<Vec<CaptureRecord>, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, timestamp, app, window_title, image_path, description, dhash
+         FROM captures
+         WHERE session_id IS NULL
+           AND image_path IS NOT NULL
+         ORDER BY timestamp ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(CaptureRecord {
+            id: row.get(0)?,
+            timestamp: row.get(1)?,
+            app: row.get(2)?,
+            window_title: row.get(3)?,
+            image_path: row.get(4)?,
+            description: row.get(5)?,
+            dhash: row.get(6)?,
+        })
+    })?;
+    let mut captures = Vec::new();
+    for row in rows {
+        captures.push(row?);
+    }
+    Ok(captures)
 }
 
 pub fn get_unprocessed(conn: &Connection) -> Result<Vec<CaptureRecord>, DbError> {
@@ -615,6 +735,30 @@ fn apply_migrations(conn: &Connection) -> Result<(), DbError> {
         conn.pragma_update(None, "user_version", DB_SCHEMA_VERSION)?;
     }
 
+    if version < 3 {
+        conn.execute_batch(
+            "
+            ALTER TABLE captures ADD COLUMN session_id TEXT REFERENCES sessions(id);
+            CREATE INDEX IF NOT EXISTS idx_captures_session_id ON captures(session_id);
+
+            CREATE TABLE IF NOT EXISTS sessions (
+                id             TEXT PRIMARY KEY,
+                start_time     TEXT NOT NULL,
+                end_time       TEXT NOT NULL,
+                collage_path   TEXT,
+                description    TEXT,
+                processed      INTEGER NOT NULL DEFAULT 0,
+                capture_count  INTEGER NOT NULL DEFAULT 0,
+                frame_count    INTEGER NOT NULL DEFAULT 0,
+                created_at     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_sessions_processed ON sessions(processed);
+            CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON sessions(start_time);
+            ",
+        )?;
+        conn.pragma_update(None, "user_version", DB_SCHEMA_VERSION)?;
+    }
+
     Ok(())
 }
 
@@ -628,11 +772,13 @@ mod tests {
     };
 
     use super::{
-        clear_image_path, count_captures_for_date, count_search_captures, get_capture_by_id,
-        get_captures_by_date, get_description_history, get_unprocessed, initialize_db,
-        insert_capture, list_capture_apps, list_capture_dates, list_capture_image_paths,
-        list_processed_capture_images, mark_processed, query_captures_filtered, search_captures,
-        update_description, update_description_with_history,
+        assign_session_to_captures, clear_image_path, count_captures_for_date,
+        count_search_captures, get_capture_by_id, get_captures_by_date,
+        get_captures_for_session_assembly, get_description_history, get_unprocessed,
+        get_unprocessed_sessions, initialize_db, insert_capture, insert_session, list_capture_apps,
+        list_capture_dates, list_capture_image_paths, list_processed_capture_images,
+        mark_processed, mark_session_processed, query_captures_filtered, search_captures,
+        update_description, update_description_with_history, SessionRecord,
     };
     use crate::models::CaptureRecord;
 
@@ -902,6 +1048,43 @@ mod tests {
         assert_eq!(apps[0].count, 1);
         assert_eq!(apps[1].app, "outlook.exe");
         assert_eq!(apps[1].count, 1);
+
+        drop(conn);
+        fs::remove_file(&db_path).expect("temporary database should be removed");
+    }
+
+    #[test]
+    fn session_crud_roundtrip_updates_captures() {
+        let db_path = test_db_path("sessions");
+        let conn = initialize_db(&db_path).expect("database should initialize");
+        let record = sample_record();
+
+        insert_capture(&conn, &record).expect("record should insert");
+
+        let session = SessionRecord {
+            id: "session-1".to_string(),
+            start_time: "2026-03-30T22:00:00+09:00".to_string(),
+            end_time: "2026-03-30T22:05:00+09:00".to_string(),
+            collage_path: Some("sessions/collage_session-1.png".to_string()),
+            description: None,
+            processed: false,
+            capture_count: 1,
+            frame_count: 1,
+        };
+
+        insert_session(&conn, &session).expect("session should insert");
+        assign_session_to_captures(&conn, std::slice::from_ref(&record.id), &session.id)
+            .expect("capture should be assigned");
+        mark_session_processed(&conn, &session.id, "Excel で月次決算を確認")
+            .expect("session should be marked processed");
+
+        let unprocessed_sessions =
+            get_unprocessed_sessions(&conn).expect("unprocessed sessions should load");
+        let session_candidates = get_captures_for_session_assembly(&conn)
+            .expect("session capture candidates should load");
+
+        assert!(unprocessed_sessions.is_empty());
+        assert!(session_candidates.is_empty());
 
         drop(conn);
         fs::remove_file(&db_path).expect("temporary database should be removed");

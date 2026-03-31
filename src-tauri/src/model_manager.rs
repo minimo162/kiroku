@@ -1,85 +1,19 @@
-use std::{env, fs, io, path::Path, time::Instant};
+use std::process::Command;
 
-use futures_util::StreamExt;
-use reqwest::header::{HeaderMap, CONTENT_LENGTH};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
-use thiserror::Error;
 
-use crate::{
-    config::save_config, models::AppConfig, state::AppState, vlm::server::resolve_model_paths,
-};
-
-const MODEL_REPO_BASE: &str = "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main";
-const DEFAULT_MODEL_FILE_NAME: &str = "Qwen3.5-0.8B-UD-Q6_K_XL.gguf";
-const DEFAULT_MMPROJ_FILE_NAME: &str = "mmproj-BF16.gguf";
-const MODEL_PROGRESS_EVENT: &str = "model-download-progress";
-const ENV_MODEL_URL: &str = "KIROKU_MODEL_URL";
-const ENV_MMPROJ_URL: &str = "KIROKU_MMPROJ_URL";
+use crate::{config::save_config, models::AppConfig, state::AppState};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SetupStatus {
     pub setup_complete: bool,
-    pub model_ready: bool,
-    pub llama_server_available: bool,
-    pub models_dir: String,
-    pub model_path: Option<String>,
-    pub mmproj_path: Option<String>,
+    pub engine_ready: bool,
+    pub node_available: bool,
+    pub copilot_server_available: bool,
+    pub edge_debugging_ready: bool,
+    pub edge_debugging_url: String,
 }
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ModelDownloadProgress {
-    pub step: String,
-    pub file_name: String,
-    pub percent: f64,
-    pub downloaded_bytes: u64,
-    pub total_bytes: Option<u64>,
-    pub speed: String,
-    pub remaining: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ModelDownloadResult {
-    pub model_path: String,
-    pub mmproj_path: String,
-}
-
-#[derive(Debug, Error)]
-pub enum ModelManagerError {
-    #[error("failed to create models directory")]
-    Io(#[from] io::Error),
-    #[error("failed to download model file")]
-    Http(#[from] reqwest::Error),
-    #[error(
-        "checksum verification failed for {file_name} (expected: {expected}, actual: {actual})"
-    )]
-    ChecksumMismatch {
-        file_name: String,
-        expected: String,
-        actual: String,
-    },
-    #[error("setup cannot complete until both model files are ready")]
-    SetupIncomplete,
-    #[error("failed to persist config")]
-    Config(#[from] crate::config::ConfigError),
-}
-
-#[derive(Debug, Clone)]
-struct ArtifactSpec {
-    file_name: &'static str,
-    env_key: &'static str,
-}
-
-const MODEL_ARTIFACTS: [ArtifactSpec; 2] = [
-    ArtifactSpec {
-        file_name: DEFAULT_MODEL_FILE_NAME,
-        env_key: ENV_MODEL_URL,
-    },
-    ArtifactSpec {
-        file_name: DEFAULT_MMPROJ_FILE_NAME,
-        env_key: ENV_MMPROJ_URL,
-    },
-];
 
 #[tauri::command]
 pub async fn get_setup_status(state: State<'_, AppState>) -> Result<SetupStatus, String> {
@@ -87,123 +21,13 @@ pub async fn get_setup_status(state: State<'_, AppState>) -> Result<SetupStatus,
 }
 
 #[tauri::command]
-pub async fn download_model(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    skip_checksum: Option<bool>,
-) -> Result<ModelDownloadResult, String> {
-    let skip = skip_checksum.unwrap_or(false);
-    let models_dir = state.app_paths.data_dir.join("models");
-    fs::create_dir_all(&models_dir).map_err(|error| error.to_string())?;
-    let client = build_download_client().map_err(|error| error.to_string())?;
-
-    for artifact in MODEL_ARTIFACTS {
-        let destination = models_dir.join(artifact.file_name);
-        let url = model_url_for(&artifact);
-
-        if destination.exists() {
-            if let Ok(head_resp) = client.head(&url).send().await {
-                if let Some(expected_size) = content_length(head_resp.headers()) {
-                    if let Ok(metadata) = std::fs::metadata(&destination) {
-                        if metadata.len() != expected_size {
-                            eprintln!(
-                                "file size mismatch for {}: expected={}, actual={}",
-                                artifact.file_name,
-                                expected_size,
-                                metadata.len()
-                            );
-                            let _ = std::fs::remove_file(&destination);
-                        }
-                    }
-                }
-            }
-        }
-
-        if destination.exists() {
-            emit_progress(
-                &app,
-                ModelDownloadProgress {
-                    step: "cached".to_string(),
-                    file_name: artifact.file_name.to_string(),
-                    percent: 100.0,
-                    downloaded_bytes: 0,
-                    total_bytes: None,
-                    speed: "既存ファイルを使用".to_string(),
-                    remaining: "0秒".to_string(),
-                },
-            );
-            continue;
-        }
-
-        let max_attempts = 3;
-        let mut last_error = None;
-
-        for attempt in 1..=max_attempts {
-            match download_artifact(&client, &app, artifact.file_name, &url, &destination, skip)
-                .await
-            {
-                Ok(()) => {
-                    last_error = None;
-                    break;
-                }
-                Err(e) => {
-                    if matches!(&e, ModelManagerError::ChecksumMismatch { .. })
-                        && attempt < max_attempts
-                    {
-                        eprintln!(
-                            "checksum mismatch attempt {attempt}/{max_attempts}, retrying in 2s..."
-                        );
-                        emit_progress(
-                            &app,
-                            ModelDownloadProgress {
-                                step: "retrying".to_string(),
-                                file_name: artifact.file_name.to_string(),
-                                percent: 0.0,
-                                downloaded_bytes: 0,
-                                total_bytes: None,
-                                speed: format!("再試行中...（{}/{}）", attempt + 1, max_attempts),
-                                remaining: "".to_string(),
-                            },
-                        );
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        last_error = Some(e);
-                    } else if matches!(&e, ModelManagerError::ChecksumMismatch { .. })
-                        && attempt == max_attempts
-                    {
-                        let _ = app.emit("checksum-retry-exhausted", artifact.file_name);
-                        last_error = Some(e);
-                    } else {
-                        return Err(e.to_string());
-                    }
-                }
-            }
-        }
-
-        if let Some(e) = last_error {
-            return Err(e.to_string());
-        }
-    }
-
-    let (model_path, mmproj_path) = resolve_model_paths(&state.app_paths)
-        .ok_or_else(|| "downloaded model files could not be discovered".to_string())?;
-
-    Ok(ModelDownloadResult {
-        model_path: model_path.to_string_lossy().into_owned(),
-        mmproj_path: mmproj_path.to_string_lossy().into_owned(),
-    })
-}
-
-#[tauri::command]
 pub async fn complete_setup(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<AppConfig, String> {
-    if resolve_model_paths(&state.app_paths).is_none() {
-        return Err(ModelManagerError::SetupIncomplete.to_string());
-    }
-
     let mut config = state.config.lock().await.clone();
     config.setup_complete = true;
+    config.vlm_engine = "copilot".to_string();
     save_config(&state.app_paths.config_path, &config).map_err(|error| error.to_string())?;
 
     {
@@ -218,213 +42,36 @@ pub async fn complete_setup(
 
 async fn build_setup_status(state: &AppState) -> SetupStatus {
     let config = state.config.lock().await.clone();
-    let model_paths = resolve_model_paths(&state.app_paths);
-    let llama_server_available = {
-        let server = state.vlm_server.lock().await;
-        server.binary_path().is_some()
+    let node_available = Command::new("node")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    let copilot_server_available = {
+        let server = state.copilot_server.lock().await;
+        server.script_path().is_some()
+    };
+    let edge_debugging_url = format!("http://127.0.0.1:{}/json/version", config.edge_cdp_port);
+    let edge_debugging_ready = if let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+    {
+        client
+            .get(&edge_debugging_url)
+            .send()
+            .await
+            .map(|response| response.status().is_success())
+            .unwrap_or(false)
+    } else {
+        false
     };
 
     SetupStatus {
         setup_complete: config.setup_complete,
-        model_ready: model_paths.is_some(),
-        llama_server_available,
-        models_dir: state
-            .app_paths
-            .data_dir
-            .join("models")
-            .to_string_lossy()
-            .into_owned(),
-        model_path: model_paths
-            .as_ref()
-            .map(|value| value.0.to_string_lossy().into_owned()),
-        mmproj_path: model_paths.map(|value| value.1.to_string_lossy().into_owned()),
-    }
-}
-
-async fn download_artifact(
-    client: &reqwest::Client,
-    app: &AppHandle,
-    file_name: &str,
-    url: &str,
-    destination: &Path,
-    skip_checksum: bool,
-) -> Result<(), ModelManagerError> {
-    let response = client.get(url).send().await?.error_for_status()?;
-    let total_bytes = content_length(response.headers());
-    let mut stream = response.bytes_stream();
-    let started_at = Instant::now();
-    let tmp_path = destination.with_extension("download");
-    let mut file = tokio::fs::File::create(&tmp_path).await?;
-    let mut downloaded_bytes = 0_u64;
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await?;
-        downloaded_bytes += chunk.len() as u64;
-
-        emit_progress(
-            app,
-            ModelDownloadProgress {
-                step: "downloading".to_string(),
-                file_name: file_name.to_string(),
-                percent: percentage(downloaded_bytes, total_bytes),
-                downloaded_bytes,
-                total_bytes,
-                speed: format_speed(downloaded_bytes, started_at.elapsed().as_secs_f64()),
-                remaining: format_remaining(
-                    downloaded_bytes,
-                    total_bytes,
-                    started_at.elapsed().as_secs_f64(),
-                ),
-            },
-        );
-    }
-
-    tokio::io::AsyncWriteExt::flush(&mut file).await?;
-    drop(file);
-
-    // ファイルサイズ検証（Content-Length との比較）
-    // Note: HuggingFace の etag は Git LFS OID であり、HTTP レスポンスボディの
-    // SHA256 とは一致しないため、ハッシュ比較ではなくサイズ検証を行う
-    if !skip_checksum {
-        if let Some(expected_size) = total_bytes {
-            if downloaded_bytes != expected_size {
-                eprintln!(
-                    "size mismatch for {file_name}: expected={expected_size}, actual={downloaded_bytes}"
-                );
-                let _ = tokio::fs::remove_file(&tmp_path).await;
-                return Err(ModelManagerError::ChecksumMismatch {
-                    file_name: file_name.to_string(),
-                    expected: format!("{expected_size} bytes"),
-                    actual: format!("{downloaded_bytes} bytes"),
-                });
-            }
-        }
-    }
-
-    tokio::fs::rename(&tmp_path, destination).await?;
-    emit_progress(
-        app,
-        ModelDownloadProgress {
-            step: "complete".to_string(),
-            file_name: file_name.to_string(),
-            percent: 100.0,
-            downloaded_bytes,
-            total_bytes,
-            speed: format_speed(downloaded_bytes, started_at.elapsed().as_secs_f64()),
-            remaining: "0秒".to_string(),
-        },
-    );
-
-    Ok(())
-}
-
-fn model_url_for(spec: &ArtifactSpec) -> String {
-    env::var(spec.env_key).unwrap_or_else(|_| format!("{MODEL_REPO_BASE}/{}", spec.file_name))
-}
-
-fn build_download_client() -> Result<reqwest::Client, reqwest::Error> {
-    reqwest::Client::builder().use_native_tls().build()
-}
-
-fn content_length(headers: &HeaderMap) -> Option<u64> {
-    headers
-        .get(CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-}
-
-fn percentage(downloaded_bytes: u64, total_bytes: Option<u64>) -> f64 {
-    match total_bytes {
-        Some(total_bytes) if total_bytes > 0 => {
-            (downloaded_bytes as f64 / total_bytes as f64) * 100.0
-        }
-        _ => 0.0,
-    }
-}
-
-fn format_speed(downloaded_bytes: u64, elapsed_secs: f64) -> String {
-    if elapsed_secs <= 0.0 {
-        return "-".to_string();
-    }
-
-    format!(
-        "{}/秒",
-        format_bytes((downloaded_bytes as f64 / elapsed_secs) as u64)
-    )
-}
-
-fn format_remaining(downloaded_bytes: u64, total_bytes: Option<u64>, elapsed_secs: f64) -> String {
-    let Some(total_bytes) = total_bytes else {
-        return "計算中".to_string();
-    };
-    if downloaded_bytes == 0 || elapsed_secs <= 0.0 {
-        return "計算中".to_string();
-    }
-
-    let bytes_per_sec = downloaded_bytes as f64 / elapsed_secs;
-    let remaining_secs = ((total_bytes.saturating_sub(downloaded_bytes)) as f64 / bytes_per_sec)
-        .max(0.0)
-        .round() as u64;
-
-    if remaining_secs < 60 {
-        format!("{remaining_secs}秒")
-    } else {
-        format!("{}分", remaining_secs / 60)
-    }
-}
-
-fn format_bytes(value: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    const GB: f64 = MB * 1024.0;
-
-    let value = value as f64;
-    if value >= GB {
-        format!("{:.1} GB", value / GB)
-    } else if value >= MB {
-        format!("{:.1} MB", value / MB)
-    } else if value >= KB {
-        format!("{:.1} KB", value / KB)
-    } else {
-        format!("{} B", value as u64)
-    }
-}
-
-fn emit_progress(app: &AppHandle, progress: ModelDownloadProgress) {
-    let _ = app.emit(MODEL_PROGRESS_EVENT, &progress);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        build_download_client, format_remaining, percentage, DEFAULT_MMPROJ_FILE_NAME,
-        DEFAULT_MODEL_FILE_NAME, MODEL_REPO_BASE,
-    };
-
-    #[test]
-    fn percentage_returns_zero_without_total() {
-        assert_eq!(percentage(10, None), 0.0);
-    }
-
-    #[test]
-    fn format_remaining_uses_seconds_or_minutes() {
-        assert_eq!(format_remaining(50, Some(100), 10.0), "10秒");
-        assert_eq!(format_remaining(100, Some(1000), 10.0), "1分");
-    }
-
-    #[test]
-    fn default_model_artifacts_point_to_qwen35_unsloth_repo() {
-        assert_eq!(
-            MODEL_REPO_BASE,
-            "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main"
-        );
-        assert_eq!(DEFAULT_MODEL_FILE_NAME, "Qwen3.5-0.8B-UD-Q6_K_XL.gguf");
-        assert_eq!(DEFAULT_MMPROJ_FILE_NAME, "mmproj-BF16.gguf");
-    }
-
-    #[test]
-    fn download_client_builds_with_native_tls_enabled() {
-        build_download_client().expect("download client should build");
+        engine_ready: node_available && copilot_server_available,
+        node_available,
+        copilot_server_available,
+        edge_debugging_ready,
+        edge_debugging_url,
     }
 }

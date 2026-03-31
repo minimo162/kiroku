@@ -10,6 +10,7 @@ pub mod models;
 pub mod preview;
 pub mod recorder;
 pub mod scheduler;
+pub mod session;
 pub mod state;
 pub mod tray;
 pub mod vlm;
@@ -22,7 +23,7 @@ use config::{get_config, save_config_command, select_data_dir, test_vlm_connecti
 use dashboard::{clear_last_error, get_dashboard_snapshot, get_recent_captures_command, get_stats};
 use export::{export_csv, list_export_options, preview_csv_export};
 use history::search_captures;
-use model_manager::{complete_setup, download_model, get_setup_status};
+use model_manager::{complete_setup, get_setup_status};
 use preview::{
     get_capture_description_history, get_capture_preview_page, update_capture_description,
 };
@@ -121,7 +122,6 @@ pub fn run() {
             select_data_dir,
             test_vlm_connection,
             get_setup_status,
-            download_model,
             complete_setup,
             preview_csv_export,
             export_csv,

@@ -1,0 +1,307 @@
+{
+  "project": "Copilot Browser Engine + Session Collage Processing for Kiroku",
+  "version": "2.0",
+  "created": "2026-03-31",
+  "tasks": [
+    {
+      "id": "T01",
+      "title": "copilot_server.ts を作成し esbuild でバンドルする",
+      "status": "done"
+    },
+    {
+      "id": "T02",
+      "title": "package.json にビルドスクリプトと playwright 依存を追加する",
+      "status": "done"
+    },
+    {
+      "id": "T03",
+      "title": "AppConfig に vlm_engine / copilot_port / edge_cdp_port を追加する",
+      "status": "done"
+    },
+    {
+      "id": "T04",
+      "title": "CopilotServer 構造体を新規作成する",
+      "status": "done"
+    },
+    {
+      "id": "T05",
+      "title": "vlm/mod.rs に copilot_server モジュールを追加する",
+      "status": "done"
+    },
+    {
+      "id": "T06",
+      "title": "AppState に CopilotServer フィールドを追加する",
+      "status": "done"
+    },
+    {
+      "id": "T07",
+      "title": "vlm/batch.rs をエンジン切り替えに対応させる",
+      "status": "done"
+    },
+    {
+      "id": "T08",
+      "title": "vlm/server.rs の Tauri コマンドをエンジン対応させる",
+      "status": "done"
+    },
+    {
+      "id": "T09",
+      "title": "settings/+page.svelte にエンジン選択 UI を追加する",
+      "status": "done"
+    },
+    {
+      "id": "T10",
+      "title": "binaries/README.md に Copilot セットアップ手順を追記する",
+      "status": "done"
+    },
+    {
+      "id": "T11",
+      "title": "copilot_server.ts のバグ修正（goto 毎回呼び出し・networkidle・extractText 削除）",
+      "status": "done"
+    },
+    {
+      "id": "T12",
+      "title": "AppConfig にセッション設定フィールドを追加する",
+      "description": "models.rs の AppConfig に session 関連フィールドを追加。後方互換性を serde(default) で維持。",
+      "file": "src-tauri/src/models.rs",
+      "status": "todo",
+      "priority": "P0",
+      "depends_on": [],
+      "details": [
+        "session_enabled: bool 追加 (既定: true)",
+        "session_gap_secs: u64 追加 (既定: 600 = 10分)",
+        "session_window_secs: u64 追加 (既定: 300 = 5分)",
+        "max_frames_per_collage: u32 追加 (既定: 6)",
+        "capture_interval_secs の UI 最小値コメントを 3 に変更（Rust 側のバリデーションは変更しない）",
+        "session_user_prompt: String 追加 (既定値は下記テンプレート)",
+        "  テンプレート: 'これは {start_time} から {end_time} の間（{duration_min}分間）の業務画面の流れです。{frame_count} 枚のスクリーンショットを時系列順に並べたコラージュを見て、この間に行っていた業務操作を1〜3文で説明してください。必ず次の観点を含めてください: 使用中のアプリケーション、実行している操作の流れ、表示されているデータや対象。出力は自然な日本語の文章のみとし、箇条書きやJSONは使わないでください。'",
+        "app_config_roundtrip_json テストに新フィールドを追加して更新する"
+      ]
+    },
+    {
+      "id": "T13",
+      "title": "DB マイグレーション: captures.session_id 追加 + sessions テーブル新規作成",
+      "description": "db.rs のスキーマバージョンを 2 → 3 に上げ、sessions テーブルと captures.session_id 列を追加する。既存データへの影響なし（nullable な列と新テーブルの追加のみ）。",
+      "file": "src-tauri/src/db.rs",
+      "status": "todo",
+      "priority": "P0",
+      "depends_on": [],
+      "details": [
+        "DB_SCHEMA_VERSION を 2 → 3 に変更",
+        "migrate_v2_to_v3() 関数を追加:",
+        "  ALTER TABLE captures ADD COLUMN session_id TEXT REFERENCES sessions(id)",
+        "  CREATE TABLE IF NOT EXISTS sessions (",
+        "    id            TEXT PRIMARY KEY,",
+        "    start_time    TEXT NOT NULL,",
+        "    end_time      TEXT NOT NULL,",
+        "    collage_path  TEXT,",
+        "    description   TEXT,",
+        "    processed     INTEGER NOT NULL DEFAULT 0,",
+        "    capture_count INTEGER NOT NULL DEFAULT 0,",
+        "    frame_count   INTEGER NOT NULL DEFAULT 0",
+        "  )",
+        "apply_migrations() に migrate_v2_to_v3() の呼び出しを追加",
+        "Session 用 CRUD 関数を追加:",
+        "  insert_session(conn, session: &SessionRecord) -> Result<(), DbError>",
+        "  get_unprocessed_sessions(conn) -> Result<Vec<SessionRecord>, DbError>",
+        "  mark_session_processed(conn, id: &str) -> Result<(), DbError>",
+        "  update_session_description(conn, id: &str, description: &str) -> Result<(), DbError>",
+        "  update_session_collage_path(conn, id: &str, path: Option<&str>) -> Result<(), DbError>",
+        "  assign_session_to_captures(conn, session_id: &str, capture_ids: &[String]) -> Result<(), DbError>",
+        "  get_captures_for_session(conn, session_id: &str) -> Result<Vec<CaptureRecord>, DbError>",
+        "models.rs に SessionRecord 構造体を追加:",
+        "  id: String, start_time: String, end_time: String,",
+        "  collage_path: Option<String>, description: Option<String>,",
+        "  processed: bool, capture_count: usize, frame_count: usize"
+      ]
+    },
+    {
+      "id": "T14",
+      "title": "session.rs を新規作成（セッション組み立て・フレーム選択・コラージュ生成）",
+      "description": "vlm/session.rs（またはトップレベル session.rs）を新規作成。未処理キャプチャをセッションにグループ化し、キーフレームを選択してコラージュ画像を生成する。",
+      "file": "src-tauri/src/session.rs",
+      "status": "todo",
+      "priority": "P0",
+      "depends_on": ["T12", "T13"],
+      "details": [
+        "## セッション組み立て: assemble_sessions()",
+        "  引数: captures: Vec<CaptureRecord>, config: &AppConfig",
+        "  処理:",
+        "    1. captures を timestamp ASC でソート（既にソート済みを前提）",
+        "    2. 連続するキャプチャ間の時間差を計算",
+        "    3. 時間差 > session_gap_secs OR 累積時間 > session_window_secs でセッションを区切る",
+        "    4. 各グループを SessionDraft { captures: Vec<CaptureRecord> } として返す",
+        "    5. 直近 session_gap_secs 以内のグループ（まだ終了していない可能性）は除外する",
+        "  戻り値: Vec<SessionDraft>",
+        "",
+        "## キーフレーム選択: select_key_frames()",
+        "  引数: captures: &[CaptureRecord], max_frames: u32",
+        "  処理:",
+        "    1. image_path が Some のキャプチャのみ対象",
+        "    2. dHash 再フィルタ: 閾値 5 で極めて類似したフレームを除去",
+        "       (既存の has_significant_change() を流用、閾値だけ変更)",
+        "    3. 残ったフレームを時系列で均等に max_frames 枚サンプリング",
+        "       (均等間隔インデックスで選択: indices = [i * n / max_frames for i in 0..max_frames])",
+        "  戻り値: Vec<&CaptureRecord>  (image_path は必ず Some)",
+        "",
+        "## コラージュ生成: build_collage()",
+        "  引数: frames: &[&CaptureRecord], output_path: &Path",
+        "  処理:",
+        "    1. フレーム数に応じてグリッドレイアウト決定:",
+        "       1枚: 1×1, 2枚: 1×2, 3〜4枚: 2×2, 5〜6枚: 2×3",
+        "    2. セル解像度 = 1280×960 / (cols × rows) で計算",
+        "    3. 各フレーム画像を読み込んでセルサイズにリサイズ (Lanczos3)",
+        "    4. image::ImageBuffer に各セルを貼り付け",
+        "    5. 各セルの右下に時刻ラベルを描画（imageproc クレートを使用、または簡易ピクセル描画）",
+        "       ※ imageproc が重ければ時刻ラベルは省略してもよい",
+        "    6. output_path に PNG で保存",
+        "  戻り値: Result<(), image::ImageError>",
+        "",
+        "## セッション処理エントリポイント: process_pending_sessions()",
+        "  引数: conn: &Connection, config: &AppConfig, data_dir: &Path",
+        "  処理:",
+        "    1. get_unprocessed() で未処理キャプチャを取得",
+        "    2. assemble_sessions() でセッションに分割",
+        "    3. 各 SessionDraft に対して:",
+        "       a. select_key_frames() でキーフレームを選択",
+        "       b. コラージュ出力パスを data_dir/sessions/<session_id>.png に設定",
+        "       c. build_collage() でコラージュを生成",
+        "       d. sessions テーブルに insert_session() でレコード挿入",
+        "       e. assign_session_to_captures() で captures.session_id を設定",
+        "    4. 成功した SessionRecord の Vec を返す",
+        "  戻り値: Result<Vec<SessionRecord>, DbError>"
+      ]
+    },
+    {
+      "id": "T15",
+      "title": "vlm/batch.rs をセッション処理に対応させる（Copilot エンジン時）",
+      "description": "Copilot エンジン + session_enabled: true の場合、個別キャプチャではなくセッション単位でバッチ処理する。llama エンジンまたは session_enabled: false の場合は既存の per-capture 処理を維持する。",
+      "file": "src-tauri/src/vlm/batch.rs",
+      "status": "todo",
+      "priority": "P0",
+      "depends_on": ["T13", "T14"],
+      "details": [
+        "vlm_batch_loop() の先頭でエンジンとセッション設定を確認:",
+        "  if options.vlm_engine == 'copilot' && options.session_enabled {",
+        "    run_session_batch_loop(...).await",
+        "  } else {",
+        "    // 既存の per-capture ループ（変更なし）",
+        "  }",
+        "",
+        "run_session_batch_loop() を新規追加:",
+        "  1. process_pending_sessions() を呼び出して処理対象セッションを取得",
+        "  2. 各セッションに対して:",
+        "     a. collage_path が None ならスキップ（コラージュ生成失敗）",
+        "     b. describe_screenshot() を collage_path と session_user_prompt で呼び出す",
+        "        - PromptContext の user_prompt にセッション情報を埋め込む",
+        "          ({start_time}, {end_time}, {duration_min}, {frame_count} を置換)",
+        "     c. 成功したら:",
+        "        - update_session_description() でセッションに説明を保存",
+        "        - get_captures_for_session() でキャプチャ一覧を取得",
+        "        - 各キャプチャに update_description() + mark_processed() を適用",
+        "        - mark_session_processed() でセッションを処理済みにする",
+        "        - options.auto_delete: コラージュ画像と元キャプチャ画像を削除",
+        "          update_session_collage_path(conn, id, None) でパスを NULL に更新",
+        "     d. 失敗したら failed++ して次のセッションへ",
+        "  3. 進捗を emit_progress() で送信（total = セッション数）",
+        "",
+        "BatchOptions に session_enabled: bool を追加",
+        "run_vlm_batch_inner() で config.session_enabled を BatchOptions に設定"
+      ]
+    },
+    {
+      "id": "T16",
+      "title": "settings/+page.svelte にセッション設定 UI を追加する",
+      "description": "Copilot エンジン選択時にセッション関連の設定項目を表示する。llama エンジンでは折りたたみまたは非表示。",
+      "file": "src/routes/settings/+page.svelte",
+      "status": "todo",
+      "priority": "P0",
+      "depends_on": ["T12"],
+      "details": [
+        "AppConfig 型定義に追加:",
+        "  session_enabled: boolean",
+        "  session_gap_secs: number",
+        "  session_window_secs: number",
+        "  max_frames_per_collage: number",
+        "  session_user_prompt: string",
+        "",
+        "defaultConfig に追加:",
+        "  session_enabled: true",
+        "  session_gap_secs: 600",
+        "  session_window_secs: 300",
+        "  max_frames_per_collage: 6",
+        "  session_user_prompt: '...(T12 のデフォルト値と同じ)'",
+        "",
+        "キャプチャ設定カードのスライダー最小値を 10 → 3 に変更",
+        "  （Copilot エンジン時は短い間隔が推奨される旨を hint テキストで補足）",
+        "",
+        "Copilot エンジン選択時の {:else} ブロックにセッション設定セクションを追加:",
+        "",
+        "  [セッション処理] トグル（session_enabled）",
+        "    ON: 以下の設定を表示",
+        "    OFF: '個別キャプチャモードで動作します' の説明テキスト",
+        "",
+        "  session_enabled == true の場合:",
+        "    - セッション時間窓: session_window_secs スライダー (1〜30分, step 1分)",
+        "      ラベル: '{config.session_window_secs / 60} 分ごとにまとめて送信'",
+        "    - 無操作ギャップ: session_gap_secs スライダー (1〜30分, step 1分)",
+        "      ラベル: '{config.session_gap_secs / 60} 分無操作でセッション区切り'",
+        "    - コラージュ最大フレーム数: max_frames_per_collage (2〜9, select or number input)",
+        "    - セッション用プロンプト: session_user_prompt textarea",
+        "      （通常の user_prompt とは別のフィールド）",
+        "",
+        "既存の capture_interval_secs スライダーの min 属性を 10 → 3 に変更",
+        "  hint テキスト: 'Copilot エンジン使用時は 5〜10 秒が推奨です'"
+      ]
+    },
+    {
+      "id": "T17",
+      "title": "動作確認・手動テスト",
+      "description": "Session Collage 機能を実際の M365 Copilot 環境で動作確認する。",
+      "file": null,
+      "status": "todo",
+      "priority": "P0",
+      "depends_on": ["T12", "T13", "T14", "T15", "T16"],
+      "details": [
+        "[ ] cargo build が警告なしで成功する",
+        "[ ] cargo test が全テスト通過する（T01〜T11 の既存テスト後退なし）",
+        "[ ] DB マイグレーション: 既存 DB に対して起動後 sessions テーブルが作成されている",
+        "[ ] DB マイグレーション: captures テーブルに session_id 列が追加されている",
+        "[ ] Copilot エンジン + session_enabled: true でバッチ実行",
+        "[ ] sessions テーブルにレコードが作成されている",
+        "[ ] コラージュ画像ファイルが生成されている（data_dir/sessions/）",
+        "[ ] バッチ完了後、captures に session の description が適用されている",
+        "[ ] auto_delete_images: true の場合、コラージュと元画像が削除されている",
+        "[ ] llama エンジン + session_enabled: false で既存の per-capture 動作が正常",
+        "[ ] Copilot エンジンで 30 分録画して Copilot エラーが激減している"
+      ]
+    }
+  ],
+  "implementation_order": [
+    "T12", "T13", "T14", "T15", "T16", "T17"
+  ],
+  "notes": {
+    "key_design_decisions": [
+      "セッション処理は Copilot エンジン時デフォルト有効、llama はオプトイン",
+      "DB は schema v2 → v3: captures.session_id (nullable) + sessions テーブル追加のみ（後退なし）",
+      "既存の per-capture バッチループは変更しない（session_enabled: false または llama エンジン時に使用）",
+      "コラージュは image クレート（既存依存）で生成。imageproc は時刻ラベルに使うが省略可",
+      "セッションの「まだ進行中」判定: 最後のキャプチャが session_gap_secs 以内なら処理しない",
+      "describe_screenshot() は変更不要: collage_path を image_path として渡すだけ"
+    ],
+    "open_questions": [
+      "imageproc クレートを追加するか（時刻ラベル描画用）、省略して Cargo.toml を増やさないか",
+      "session_window_secs と session_gap_secs の両方を設定するのは複雑すぎるか",
+      "  → シンプルにするなら session_window_secs だけにして gap は無くしてもよい",
+      "コラージュ保存先: data_dir/sessions/ ディレクトリを新規作成するか、temp を使うか",
+      "  → data_dir/sessions/ の方がデバッグしやすい"
+    ],
+    "recommended_numbers": {
+      "capture_interval_secs": "5〜10 秒（Copilot モード時の推奨。ユーザーが設定）",
+      "session_window_secs": "300 秒（5分）",
+      "session_gap_secs": "600 秒（10分）",
+      "max_frames_per_collage": "6（2×3グリッド）",
+      "collage_max_size": "1280×960px",
+      "dedup_threshold_for_key_frames": "5（通常の dhash_threshold の半分）"
+    }
+  }
+}

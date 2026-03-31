@@ -13,14 +13,22 @@
     capture_interval_secs: number;
     dhash_threshold: number;
     auto_delete_images: boolean;
+    session_enabled: boolean;
+    session_gap_secs: number;
+    session_window_secs: number;
+    max_frames_per_collage: number;
     scheduler_enabled: boolean;
     setup_complete: boolean;
     batch_time: string;
+    vlm_engine: string;
     vlm_host: string;
     vlm_max_tokens: number;
+    copilot_port: number;
+    edge_cdp_port: number;
     data_dir: string;
     system_prompt: string;
     user_prompt: string;
+    session_user_prompt: string;
     mask_rules: MaskRule[];
   };
 
@@ -34,16 +42,25 @@
     capture_interval_secs: 30,
     dhash_threshold: 10,
     auto_delete_images: true,
+    session_enabled: true,
+    session_gap_secs: 600,
+    session_window_secs: 300,
+    max_frames_per_collage: 6,
     scheduler_enabled: true,
     setup_complete: false,
     batch_time: "22:00",
+    vlm_engine: "copilot",
     vlm_host: "127.0.0.1:8080",
     vlm_max_tokens: 256,
+    copilot_port: 18080,
+    edge_cdp_port: 9222,
     data_dir: "",
     system_prompt:
       "あなたは経理部門向けの業務記録アシスタントです。画面上で確認できる事実を優先し、日本語で簡潔に記述してください。SAP GUI、Excel、Outlook、Teams などの画面を対象とし、連結PKG、内部取引消去、UPI、月次決算、メール確認、会議参加などの業務文脈が明確な場合のみ用語を使ってください。推測は控えめにし、不確実な場合は一般的な表現に留めてください。",
     user_prompt:
       "このスクリーンショットに写っている業務操作を1から3文で説明してください。必ず次の観点を含めてください: 使用中のアプリケーション、実行している操作、表示されているデータや対象。出力は自然な日本語の文章のみとし、箇条書きやJSONは使わないでください。",
+    session_user_prompt:
+      "これは {start_time} から {end_time} の間（{duration_min}分間）の業務画面の流れです。{frame_count} 枚のスクリーンショットを時系列順に並べたコラージュを見て、この間に行っていた業務操作を1〜3文で説明してください。必ず次の観点を含めてください: 使用中のアプリケーション、実行している操作の流れ、表示されているデータや対象。出力は自然な日本語の文章のみとし、箇条書きや JSON は使わないでください。",
     mask_rules: []
   };
 
@@ -75,10 +92,7 @@
   }
 
   function refreshValidation() {
-    fieldErrors = {
-      vlmHost: validateVlmHost(config.vlm_host),
-      vlmMaxTokens: validateMaxTokens(config.vlm_max_tokens)
-    };
+    fieldErrors = currentValidationErrors();
   }
 
   function touchField(field: keyof typeof touched) {
@@ -88,7 +102,7 @@
 
   function currentValidationErrors() {
     return {
-      vlmHost: validateVlmHost(config.vlm_host),
+      vlmHost: null,
       vlmMaxTokens: validateMaxTokens(config.vlm_max_tokens)
     };
   }
@@ -145,39 +159,6 @@
       selectingFolder = false;
     }
   }
-
-  async function testConnection() {
-    if (!isTauri()) return;
-    const hostError = validateVlmHost(config.vlm_host);
-    fieldErrors = {
-      ...fieldErrors,
-      vlmHost: hostError
-    };
-    touched = {
-      ...touched,
-      vlmHost: true
-    };
-    if (hostError) {
-      addToast("error", hostError);
-      return;
-    }
-
-    testing = true;
-    try {
-      const ok = await invoke<boolean>("test_vlm_connection", { vlmHost: config.vlm_host });
-      addToast(
-        ok ? "success" : "info",
-        ok
-          ? "分析エンジンへの接続に成功しました。"
-          : "分析エンジンは応答しましたが、正常ステータスではありません。"
-      );
-    } catch (error) {
-      addToast("error", error instanceof Error ? error.message : String(error));
-    } finally {
-      testing = false;
-    }
-  }
-
   function addMaskRule() {
     config = {
       ...config,
@@ -241,7 +222,7 @@
     window.addEventListener("keydown", handleKeyDown);
 
     if (!tauriAvailable) {
-      addToast("info", "ブラウザプレビューでは設定の保存や接続テストを実行できません。");
+      addToast("info", "ブラウザプレビューでは設定の保存を実行できません。");
     }
   });
 
@@ -273,7 +254,7 @@
       <div class="rounded-[1.75rem] border border-ink-100 bg-ink-900 px-5 py-5 text-white">
         <p class="text-xs font-semibold uppercase tracking-[0.24em] text-white/60">設定のヒント</p>
         <div class="mt-4 space-y-3 text-sm leading-6 text-white/80">
-          <p>キャプチャ間隔は 10 秒から 300 秒の範囲で調整できます。</p>
+          <p>キャプチャ間隔は 3 秒から 300 秒の範囲で調整できます。</p>
           <p>検出感度を上げるほど、近い画面変化をスキップしやすくなります。</p>
           <p>夜間バッチを有効にすると、指定時刻に未処理フレームの説明文を自動生成します。</p>
           <p>保存先ディレクトリはキャプチャ画像と関連データの出力先です。</p>
@@ -304,7 +285,7 @@
             id="capture-interval"
             class="mt-3 w-full accent-brass-600"
             type="range"
-            min="10"
+            min="3"
             max="300"
             step="10"
             bind:value={config.capture_interval_secs}
@@ -370,37 +351,175 @@
 
       <div class="mt-6 space-y-5">
         <div>
-          <label class="text-sm font-medium text-ink-700" for="vlm-host">分析エンジンのアドレス</label>
-          <input
-            id="vlm-host"
-            class="mt-3 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300"
-            type="text"
-            bind:value={config.vlm_host}
-            placeholder="127.0.0.1:8080"
-            oninput={refreshValidation}
-            onblur={() => touchField("vlmHost")}
-          />
-          {#if touched.vlmHost && fieldErrors.vlmHost}
-            <p class="mt-2 text-sm text-cinnabar-700">{fieldErrors.vlmHost}</p>
-          {/if}
+          <p class="text-sm font-medium text-ink-700">分析エンジン</p>
+          <div class="mt-3 rounded-2xl border border-brass-300 bg-brass-50 px-4 py-4">
+            <p class="text-sm font-semibold text-ink-900">Microsoft Copilot</p>
+            <p class="mt-1 text-xs text-ink-500">このアプリは Copilot 専用構成です。Edge ブラウザ経由で説明文を生成します。</p>
+          </div>
         </div>
 
-        <div>
-          <label class="text-sm font-medium text-ink-700" for="vlm-max-tokens">説明文の最大長</label>
-          <input
-            id="vlm-max-tokens"
-            class="mt-3 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300"
-            type="number"
-            min="64"
-            max="2048"
-            step="64"
-            bind:value={config.vlm_max_tokens}
-            oninput={refreshValidation}
-            onblur={() => touchField("vlmMaxTokens")}
-          />
-          {#if touched.vlmMaxTokens && fieldErrors.vlmMaxTokens}
-            <p class="mt-2 text-sm text-cinnabar-700">{fieldErrors.vlmMaxTokens}</p>
-          {/if}
+        <div class="space-y-4">
+          <div class="rounded-2xl border border-ink-100 bg-ink-50/70 px-4 py-4 text-sm leading-6 text-ink-600">
+            <p class="font-semibold text-ink-900">事前準備</p>
+            <p class="mt-2">バッチ実行前に、以下の手順で Edge を起動してください。</p>
+            <ol class="mt-2 list-decimal space-y-1 pl-5">
+              <li>
+                Edge のショートカットに
+                <code class="rounded bg-ink-200 px-1 text-xs">--remote-debugging-port=9222</code>
+                を追加して起動
+              </li>
+              <li>
+                Edge で
+                <code class="rounded bg-ink-200 px-1 text-xs">
+                  https://m365.cloud.microsoft/chat/
+                </code>
+                を開いて M365 にログイン
+              </li>
+            </ol>
+          </div>
+
+          <div>
+            <label class="text-sm font-medium text-ink-700" for="vlm-max-tokens">説明文の最大長</label>
+            <input
+              id="vlm-max-tokens"
+              class="mt-3 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300"
+              type="number"
+              min="64"
+              max="2048"
+              step="64"
+              bind:value={config.vlm_max_tokens}
+              oninput={refreshValidation}
+              onblur={() => touchField("vlmMaxTokens")}
+            />
+            {#if touched.vlmMaxTokens && fieldErrors.vlmMaxTokens}
+              <p class="mt-2 text-sm text-cinnabar-700">{fieldErrors.vlmMaxTokens}</p>
+            {/if}
+          </div>
+
+          <div>
+            <label class="text-sm font-medium text-ink-700" for="edge-cdp-port"
+              >Edge CDP ポート</label
+            >
+            <input
+              id="edge-cdp-port"
+              class="mt-3 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300"
+              type="number"
+              min="1024"
+              max="65535"
+              bind:value={config.edge_cdp_port}
+            />
+            <p class="mt-2 text-xs text-ink-400">通常は変更不要です（既定: 9222）</p>
+          </div>
+
+          <div class="space-y-4 rounded-2xl border border-ink-100 bg-white px-4 py-4">
+            <div class="flex items-center justify-between gap-4">
+              <div>
+                <p class="text-sm font-semibold text-ink-900">セッション処理</p>
+                <p class="mt-0.5 text-xs text-ink-500">
+                  複数フレームを結合して Copilot に送信します。
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                bind:checked={config.session_enabled}
+                class="h-4 w-4 rounded border-ink-300 text-brass-600 accent-brass-600"
+              />
+            </div>
+
+            {#if config.session_enabled}
+              <div class="space-y-4 border-t border-ink-100 pt-4">
+                <div>
+                  <div class="mb-1 flex items-center justify-between gap-3">
+                    <label class="text-xs font-medium text-ink-700" for="session-gap-secs"
+                      >セッション区切り（無操作）</label
+                    >
+                    <span class="text-xs text-ink-500">{Math.round(config.session_gap_secs / 60)} 分</span>
+                  </div>
+                  <input
+                    id="session-gap-secs"
+                    type="range"
+                    min="120"
+                    max="1800"
+                    step="60"
+                    bind:value={config.session_gap_secs}
+                    class="w-full accent-brass-600"
+                  />
+                  <div class="mt-0.5 flex justify-between text-xs text-ink-400">
+                    <span>2分</span>
+                    <span>30分</span>
+                  </div>
+                </div>
+
+                <div>
+                  <div class="mb-1 flex items-center justify-between gap-3">
+                    <label class="text-xs font-medium text-ink-700" for="session-window-secs"
+                      >セッション最大長</label
+                    >
+                    <span class="text-xs text-ink-500">{Math.round(config.session_window_secs / 60)} 分</span>
+                  </div>
+                  <input
+                    id="session-window-secs"
+                    type="range"
+                    min="60"
+                    max="900"
+                    step="60"
+                    bind:value={config.session_window_secs}
+                    class="w-full accent-brass-600"
+                  />
+                  <div class="mt-0.5 flex justify-between text-xs text-ink-400">
+                    <span>1分</span>
+                    <span>15分</span>
+                  </div>
+                </div>
+
+                <div>
+                  <div class="mb-1 flex items-center justify-between gap-3">
+                    <label
+                      class="text-xs font-medium text-ink-700"
+                      for="max-frames-per-collage"
+                      >コラージュ最大フレーム数</label
+                    >
+                    <span class="text-xs text-ink-500">{config.max_frames_per_collage} 枚</span>
+                  </div>
+                  <input
+                    id="max-frames-per-collage"
+                    type="range"
+                    min="2"
+                    max="6"
+                    step="1"
+                    bind:value={config.max_frames_per_collage}
+                    class="w-full accent-brass-600"
+                  />
+                  <div class="mt-0.5 flex justify-between text-xs text-ink-400">
+                    <span>2</span>
+                    <span>6</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label
+                    class="mb-1 block text-xs font-medium text-ink-700"
+                    for="session-user-prompt"
+                  >
+                    セッション用プロンプト
+                  </label>
+                  <textarea
+                    id="session-user-prompt"
+                    bind:value={config.session_user_prompt}
+                    rows="4"
+                    class="w-full rounded-2xl border border-ink-100 bg-white px-3 py-2 text-xs leading-6 text-ink-700 outline-none transition focus:border-brass-300"
+                  ></textarea>
+                  <p class="mt-1 text-xs text-ink-400">
+                    プレースホルダ:
+                    <span>{"{start_time}"}</span>
+                    <span>{" {end_time}"}</span>
+                    <span>{" {duration_min}"}</span>
+                    <span>{" {frame_count}"}</span>
+                  </p>
+                </div>
+              </div>
+            {/if}
+          </div>
         </div>
 
         <div>
@@ -553,13 +672,6 @@
               disabled={!tauriAvailable || saving || hasErrors}
             >
               {saving ? "保存中..." : "設定を保存"}
-            </button>
-            <button
-              class="rounded-full border border-ink-200 bg-white px-5 py-3 text-sm font-semibold text-ink-700 transition hover:border-brass-300 hover:text-brass-700 disabled:cursor-not-allowed disabled:opacity-60"
-              onclick={testConnection}
-              disabled={!tauriAvailable || testing}
-            >
-              {testing ? "確認中..." : "接続を確認"}
             </button>
           </div>
           <p class="mt-4 text-sm leading-6 text-ink-500">`Ctrl+S` でも設定を保存できます。</p>
