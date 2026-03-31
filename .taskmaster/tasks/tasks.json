@@ -452,7 +452,7 @@
         "dependencies": [
           20
         ],
-        "status": "in-progress",
+        "status": "done",
         "subtasks": [
           {
             "id": 1,
@@ -471,8 +471,8 @@
           },
           {
             "id": 4,
-            "title": "リビルド後に light.exe 手動実行で ICE38 が解消されたことを確認",
-            "status": "pending"
+            "title": "ICE03 (Handlebars スコープ) 修正と MSI ビルド成功確認",
+            "status": "done"
           },
           {
             "id": 5,
