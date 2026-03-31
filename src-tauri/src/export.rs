@@ -330,6 +330,7 @@ mod tests {
 
         assert_eq!(preview.count, 1);
 
+        drop(conn);
         fs::remove_dir_all(&dir).expect("test directory should be removed");
     }
 
@@ -366,6 +367,7 @@ mod tests {
         assert!(contents.contains("Excel で売上表を確認している。"));
         assert!(contents.contains("2026-04-02T10:00:00+09:00,outlook.exe,受信トレイ,"));
 
+        drop(conn);
         fs::remove_dir_all(&dir).expect("test directory should be removed");
     }
 
@@ -392,6 +394,7 @@ mod tests {
             "unsafe descriptions should point back to the capture id"
         );
 
+        drop(conn);
         fs::remove_dir_all(&dir).expect("test directory should be removed");
     }
 
@@ -440,6 +443,7 @@ mod tests {
         assert!(contents.contains("[取引先]"));
         assert!(contents.contains("[金額]"));
 
+        drop(conn);
         fs::remove_dir_all(&dir).expect("test directory should be removed");
     }
 }

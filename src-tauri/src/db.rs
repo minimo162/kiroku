@@ -680,6 +680,7 @@ mod tests {
             "processed record should be filtered out"
         );
 
+        drop(conn);
         fs::remove_file(&db_path).expect("temporary database should be removed");
     }
 
@@ -715,6 +716,7 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, excel_record.id);
 
+        drop(conn);
         fs::remove_file(&db_path).expect("temporary database should be removed");
     }
 
@@ -754,6 +756,7 @@ mod tests {
             .expect("stored record should exist");
         assert_eq!(stored.image_path, None);
 
+        drop(conn);
         fs::remove_file(&db_path).expect("temporary database should be removed");
     }
 
@@ -800,6 +803,7 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, outlook_record.id);
 
+        drop(conn);
         fs::remove_file(&db_path).expect("temporary database should be removed");
     }
 
@@ -832,6 +836,7 @@ mod tests {
             Some("Excel で月次報告を修正")
         );
 
+        drop(conn);
         fs::remove_file(&db_path).expect("temporary database should be removed");
     }
 
@@ -866,6 +871,7 @@ mod tests {
         assert_eq!(groups[0].date, "2026-03-30");
         assert_eq!(groups[0].count, 55);
 
+        drop(conn);
         fs::remove_file(&db_path).expect("temporary database should be removed");
     }
 
@@ -897,6 +903,7 @@ mod tests {
         assert_eq!(apps[1].app, "outlook.exe");
         assert_eq!(apps[1].count, 1);
 
+        drop(conn);
         fs::remove_file(&db_path).expect("temporary database should be removed");
     }
 }

@@ -350,6 +350,7 @@ mod tests {
             "orphaned metadata should be removed"
         );
 
+        drop(conn);
         fs::remove_dir_all(&base_dir).expect("temporary capture directory should be removed");
     }
 
@@ -393,6 +394,7 @@ mod tests {
             .expect("stored record should exist");
         assert_eq!(stored.image_path, None);
 
+        drop(conn);
         fs::remove_dir_all(&base_dir).expect("temporary capture directory should be removed");
     }
 }
