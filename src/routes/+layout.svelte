@@ -8,6 +8,7 @@
   import type { Snippet } from "svelte";
   import { addToast } from "$lib/toast.svelte";
   import ToastContainer from "$lib/components/ToastContainer.svelte";
+  import type { DashboardSnapshot } from "$lib/types/dashboard";
 
   let { children }: { children: Snippet } = $props();
 
@@ -19,17 +20,29 @@
     { href: "/dashboard", label: "ダッシュボード", status: "live" },
     { href: "/history", label: "履歴", status: "live" },
     { href: "/settings", label: "設定", status: "live" },
-    { href: "/preview", label: "記述プレビュー", status: "live" },
+    { href: "/preview", label: "プレビュー", status: "live" },
     { href: "/export", label: "エクスポート", status: "live" }
   ];
 
   let checkingSetup = $state(true);
   let tauriAvailable = $state(false);
+  let isRecording = $state(false);
+  let nextBatchAt = $state<string | null>(null);
 
   const isTauri = () =>
     typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
   const isSetupRoute = () => $page.url.pathname.startsWith("/setup");
+
+  function formatNextBatch(iso: string | null): string {
+    if (!iso) return "";
+    const date = new Date(iso);
+    if (Number.isNaN(date.valueOf())) return iso;
+    return new Intl.DateTimeFormat("ja-JP", {
+      hour: "2-digit",
+      minute: "2-digit"
+    }).format(date);
+  }
 
   onMount(() => {
     tauriAvailable = isTauri();
@@ -40,6 +53,15 @@
 
     let disposed = false;
     const unlisteners: Array<() => void> = [];
+
+    void invoke<DashboardSnapshot>("get_dashboard_snapshot")
+      .then((snap) => {
+        if (!disposed) {
+          isRecording = snap.stats.is_recording;
+          nextBatchAt = snap.stats.next_batch_run_at;
+        }
+      })
+      .catch(() => {});
 
     void (async () => {
       try {
@@ -57,6 +79,16 @@
     })();
 
     void (async () => {
+      const recordingUnlisten = await listen<boolean>("recording-status", (event) => {
+        if (!disposed) isRecording = event.payload;
+      });
+      unlisteners.push(recordingUnlisten);
+
+      const schedulerUnlisten = await listen<string | null>("scheduler-status", (event) => {
+        if (!disposed) nextBatchAt = event.payload;
+      });
+      unlisteners.push(schedulerUnlisten);
+
       const loginRequiredUnlisten = await listen<string>("copilot-login-required", async (event) => {
         if (disposed) {
           return;
@@ -105,13 +137,25 @@
             <p class="mt-3 text-sm leading-6 text-white/75">
               キャプチャ状況と説明文の生成状況を一つの画面で確認します。
             </p>
+            <div class="mt-4 flex items-center gap-2">
+              {#if isRecording}
+                <span class="relative flex h-2.5 w-2.5 flex-shrink-0">
+                  <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-cinnabar-400 opacity-75"></span>
+                  <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-cinnabar-500"></span>
+                </span>
+                <span class="text-xs font-semibold text-cinnabar-300">記録中</span>
+              {:else}
+                <span class="h-2.5 w-2.5 flex-shrink-0 rounded-full bg-white/20"></span>
+                <span class="text-xs text-white/40">停止中</span>
+              {/if}
+            </div>
           </div>
 
           <nav class="mt-6 space-y-2">
             {#each navItems as item}
               <a
                 href={item.href}
-                class={`flex items-center justify-between rounded-2xl border px-4 py-3 text-sm font-medium transition ${
+                class={`flex items-center gap-2 rounded-2xl border px-4 py-3 text-sm font-medium transition ${
                   $page.url.pathname === item.href
                     ? "border-brass-200 bg-brass-50 text-brass-700"
                     : "border-transparent bg-transparent text-ink-600 hover:border-ink-100 hover:bg-ink-50/80 hover:text-ink-900"
@@ -124,15 +168,6 @@
                 }}
               >
                 <span>{item.label}</span>
-                <span
-                  class={`rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.24em] ${
-                    item.status === "live"
-                      ? "bg-brass-100 text-brass-700"
-                      : "bg-ink-100 text-ink-400"
-                  }`}
-                >
-                  {item.status === "live" ? "有効" : item.status}
-                </span>
               </a>
             {/each}
           </nav>
@@ -143,6 +178,11 @@
               `Ctrl+Shift+K` で記録開始/停止。
               ウィンドウを閉じてもトレイに常駐します。
             </p>
+            {#if nextBatchAt}
+              <p class="mt-3 text-xs font-medium text-ink-500">
+                次回バッチ: <span class="font-semibold text-ink-700">{formatNextBatch(nextBatchAt)}</span>
+              </p>
+            {/if}
           </div>
         </div>
       </aside>

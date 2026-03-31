@@ -82,6 +82,7 @@
   let copilotStatusMessage = $state("接続テストを実行すると Copilot の状態を確認できます。");
   let copilotStatusUrl = $state<string | null>(null);
   let showCopilotAdvanced = $state(false);
+  let showAdvanced = $state(false);
   let maskPreviewInput = $state("株式会社A の売上 120,000 円を Excel で確認");
   let tauriAvailable = $state(false);
   let fieldErrors = $state({
@@ -323,6 +324,7 @@
           <p>キャプチャ間隔は 3 秒から 300 秒の範囲で調整できます。</p>
           <p>検出感度を上げるほど、近い画面変化をスキップしやすくなります。</p>
           <p>自動バッチを有効にすると、指定時刻に未処理フレームの説明文を自動生成します。</p>
+          <p>「詳細設定を表示」でプロンプトやマスクルール等の上級設定にアクセスできます。</p>
           <p>保存先ディレクトリはキャプチャ画像と関連データの出力先です。</p>
         </div>
       </div>
@@ -531,115 +533,117 @@
             </div>
           </details>
 
-          <div class="space-y-4 rounded-2xl border border-ink-100 bg-white px-4 py-4">
-            <div class="flex items-center justify-between gap-4">
-              <div>
-                <p class="text-sm font-semibold text-ink-900">セッション処理</p>
-                <p class="mt-0.5 text-xs text-ink-500">
-                  複数フレームを結合して Copilot に送信します。
-                </p>
-              </div>
-              <input
-                type="checkbox"
-                bind:checked={config.session_enabled}
-                class="h-4 w-4 rounded border-ink-300 text-brass-600 accent-brass-600"
-              />
-            </div>
-
-            {#if config.session_enabled}
-              <div class="space-y-4 border-t border-ink-100 pt-4">
+          {#if showAdvanced}
+            <div class="space-y-4 rounded-2xl border border-ink-100 bg-white px-4 py-4">
+              <div class="flex items-center justify-between gap-4">
                 <div>
-                  <div class="mb-1 flex items-center justify-between gap-3">
-                    <label class="text-xs font-medium text-ink-700" for="session-gap-secs"
-                      >セッション区切り（無操作）</label
-                    >
-                    <span class="text-xs text-ink-500">{Math.round(config.session_gap_secs / 60)} 分</span>
-                  </div>
-                  <input
-                    id="session-gap-secs"
-                    type="range"
-                    min="120"
-                    max="1800"
-                    step="60"
-                    bind:value={config.session_gap_secs}
-                    class="w-full accent-brass-600"
-                  />
-                  <div class="mt-0.5 flex justify-between text-xs text-ink-400">
-                    <span>2分</span>
-                    <span>30分</span>
-                  </div>
-                </div>
-
-                <div>
-                  <div class="mb-1 flex items-center justify-between gap-3">
-                    <label class="text-xs font-medium text-ink-700" for="session-window-secs"
-                      >セッション最大長</label
-                    >
-                    <span class="text-xs text-ink-500">{Math.round(config.session_window_secs / 60)} 分</span>
-                  </div>
-                  <input
-                    id="session-window-secs"
-                    type="range"
-                    min="60"
-                    max="900"
-                    step="60"
-                    bind:value={config.session_window_secs}
-                    class="w-full accent-brass-600"
-                  />
-                  <div class="mt-0.5 flex justify-between text-xs text-ink-400">
-                    <span>1分</span>
-                    <span>15分</span>
-                  </div>
-                </div>
-
-                <div>
-                  <div class="mb-1 flex items-center justify-between gap-3">
-                    <label
-                      class="text-xs font-medium text-ink-700"
-                      for="max-frames-per-collage"
-                      >コラージュ最大フレーム数</label
-                    >
-                    <span class="text-xs text-ink-500">{config.max_frames_per_collage} 枚</span>
-                  </div>
-                  <input
-                    id="max-frames-per-collage"
-                    type="range"
-                    min="2"
-                    max="6"
-                    step="1"
-                    bind:value={config.max_frames_per_collage}
-                    class="w-full accent-brass-600"
-                  />
-                  <div class="mt-0.5 flex justify-between text-xs text-ink-400">
-                    <span>2</span>
-                    <span>6</span>
-                  </div>
-                </div>
-
-                <div>
-                  <label
-                    class="mb-1 block text-xs font-medium text-ink-700"
-                    for="session-user-prompt"
-                  >
-                    セッション用プロンプト
-                  </label>
-                  <textarea
-                    id="session-user-prompt"
-                    bind:value={config.session_user_prompt}
-                    rows="4"
-                    class="w-full rounded-2xl border border-ink-100 bg-white px-3 py-2 text-xs leading-6 text-ink-700 outline-none transition focus:border-brass-300"
-                  ></textarea>
-                  <p class="mt-1 text-xs text-ink-400">
-                    プレースホルダ:
-                    <span>{"{start_time}"}</span>
-                    <span>{" {end_time}"}</span>
-                    <span>{" {duration_min}"}</span>
-                    <span>{" {frame_count}"}</span>
+                  <p class="text-sm font-semibold text-ink-900">セッション処理</p>
+                  <p class="mt-0.5 text-xs text-ink-500">
+                    複数フレームを結合して Copilot に送信します。
                   </p>
                 </div>
+                <input
+                  type="checkbox"
+                  bind:checked={config.session_enabled}
+                  class="h-4 w-4 rounded border-ink-300 text-brass-600 accent-brass-600"
+                />
               </div>
-            {/if}
-          </div>
+
+              {#if config.session_enabled}
+                <div class="space-y-4 border-t border-ink-100 pt-4">
+                  <div>
+                    <div class="mb-1 flex items-center justify-between gap-3">
+                      <label class="text-xs font-medium text-ink-700" for="session-gap-secs"
+                        >セッション区切り（無操作）</label
+                      >
+                      <span class="text-xs text-ink-500">{Math.round(config.session_gap_secs / 60)} 分</span>
+                    </div>
+                    <input
+                      id="session-gap-secs"
+                      type="range"
+                      min="120"
+                      max="1800"
+                      step="60"
+                      bind:value={config.session_gap_secs}
+                      class="w-full accent-brass-600"
+                    />
+                    <div class="mt-0.5 flex justify-between text-xs text-ink-400">
+                      <span>2分</span>
+                      <span>30分</span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div class="mb-1 flex items-center justify-between gap-3">
+                      <label class="text-xs font-medium text-ink-700" for="session-window-secs"
+                        >セッション最大長</label
+                      >
+                      <span class="text-xs text-ink-500">{Math.round(config.session_window_secs / 60)} 分</span>
+                    </div>
+                    <input
+                      id="session-window-secs"
+                      type="range"
+                      min="60"
+                      max="900"
+                      step="60"
+                      bind:value={config.session_window_secs}
+                      class="w-full accent-brass-600"
+                    />
+                    <div class="mt-0.5 flex justify-between text-xs text-ink-400">
+                      <span>1分</span>
+                      <span>15分</span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div class="mb-1 flex items-center justify-between gap-3">
+                      <label
+                        class="text-xs font-medium text-ink-700"
+                        for="max-frames-per-collage"
+                        >コラージュ最大フレーム数</label
+                      >
+                      <span class="text-xs text-ink-500">{config.max_frames_per_collage} 枚</span>
+                    </div>
+                    <input
+                      id="max-frames-per-collage"
+                      type="range"
+                      min="2"
+                      max="6"
+                      step="1"
+                      bind:value={config.max_frames_per_collage}
+                      class="w-full accent-brass-600"
+                    />
+                    <div class="mt-0.5 flex justify-between text-xs text-ink-400">
+                      <span>2</span>
+                      <span>6</span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label
+                      class="mb-1 block text-xs font-medium text-ink-700"
+                      for="session-user-prompt"
+                    >
+                      セッション用プロンプト
+                    </label>
+                    <textarea
+                      id="session-user-prompt"
+                      bind:value={config.session_user_prompt}
+                      rows="4"
+                      class="w-full rounded-2xl border border-ink-100 bg-white px-3 py-2 text-xs leading-6 text-ink-700 outline-none transition focus:border-brass-300"
+                    ></textarea>
+                    <p class="mt-1 text-xs text-ink-400">
+                      プレースホルダ:
+                      <span>{"{start_time}"}</span>
+                      <span>{" {end_time}"}</span>
+                      <span>{" {duration_min}"}</span>
+                      <span>{" {frame_count}"}</span>
+                    </p>
+                  </div>
+                </div>
+              {/if}
+            </div>
+          {/if}
         </div>
 
         <div>
@@ -662,126 +666,139 @@
           </div>
         </div>
 
-        <div class="rounded-[1.5rem] border border-ink-100 bg-ink-50/70 px-4 py-4">
-          <div class="flex items-start justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium text-ink-700">生成プロンプトの調整</p>
-              <p class="mt-1 text-sm leading-6 text-ink-500">
-                経理業務向けの既定プロンプトをベースに、説明文の粒度や表現を調整できます。
-              </p>
-            </div>
-          </div>
-
-          <div class="mt-5 space-y-4">
-            <div>
-              <label class="text-sm font-medium text-ink-700" for="system-prompt">システムプロンプト</label>
-              <textarea
-                id="system-prompt"
-                class="mt-3 min-h-32 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm leading-6 text-ink-700 outline-none transition focus:border-brass-300"
-                bind:value={config.system_prompt}
-              ></textarea>
-            </div>
-
-            <div>
-              <label class="text-sm font-medium text-ink-700" for="user-prompt">ユーザープロンプト</label>
-              <textarea
-                id="user-prompt"
-                class="mt-3 min-h-28 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm leading-6 text-ink-700 outline-none transition focus:border-brass-300"
-                bind:value={config.user_prompt}
-              ></textarea>
-            </div>
-          </div>
-        </div>
-
-        <div class="rounded-[1.5rem] border border-ink-100 bg-white px-4 py-4">
-          <div class="flex items-start justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium text-ink-700">マスキングルール</p>
-              <p class="mt-1 text-sm leading-6 text-ink-500">
-                CSV エクスポート時に、取引先名や金額などの表現を自動置換します。
-              </p>
-            </div>
-            <button
-              class="rounded-full border border-ink-200 bg-white px-4 py-2 text-sm font-semibold text-ink-700 transition hover:border-brass-300 hover:text-brass-700"
-              type="button"
-              onclick={addMaskRule}
-            >
-              ルールを追加
-            </button>
-          </div>
-
-          <div class="mt-4 space-y-3">
-            {#if config.mask_rules.length === 0}
-              <div class="rounded-2xl border border-dashed border-ink-200 px-4 py-6 text-sm text-ink-400">
-                まだマスキングルールはありません。必要な場合のみ追加してください。
+        {#if showAdvanced}
+          <div class="rounded-[1.5rem] border border-ink-100 bg-ink-50/70 px-4 py-4">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <p class="text-sm font-medium text-ink-700">生成プロンプトの調整</p>
+                <p class="mt-1 text-sm leading-6 text-ink-500">
+                  経理業務向けの既定プロンプトをベースに、説明文の粒度や表現を調整できます。
+                </p>
               </div>
-            {:else}
-              {#each config.mask_rules as rule, index}
-                <div class="rounded-2xl border border-ink-100 bg-ink-50/70 px-4 py-4">
-                  <div class="grid gap-3 lg:grid-cols-[1.1fr_0.9fr_auto]">
-                    <input
-                      class="rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300"
-                      type="text"
-                      value={rule.pattern}
-                      placeholder="例: 株式会社A または \\b\\d{3},\\d{3}\\b"
-                      oninput={(event) =>
-                        updateMaskRule(index, {
-                          ...rule,
-                          pattern: (event.currentTarget as HTMLInputElement).value
-                        })}
-                    />
-                    <input
-                      class="rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300"
-                      type="text"
-                      value={rule.replacement}
-                      placeholder="[MASKED]"
-                      oninput={(event) =>
-                        updateMaskRule(index, {
-                          ...rule,
-                          replacement: (event.currentTarget as HTMLInputElement).value
-                        })}
-                    />
-                    <button
-                      class="rounded-full border border-cinnabar-200 bg-cinnabar-50 px-4 py-3 text-sm font-semibold text-cinnabar-700 transition hover:bg-cinnabar-100"
-                      type="button"
-                      onclick={() => removeMaskRule(index)}
-                    >
-                      削除
-                    </button>
-                  </div>
-
-                  <label class="mt-3 flex items-center gap-3 text-sm text-ink-600">
-                    <input
-                      class="h-4 w-4 accent-brass-600"
-                      type="checkbox"
-                      checked={rule.is_regex}
-                      onchange={(event) =>
-                        updateMaskRule(index, {
-                          ...rule,
-                          is_regex: (event.currentTarget as HTMLInputElement).checked
-                        })}
-                    />
-                    正規表現として扱う
-                  </label>
-                </div>
-              {/each}
-            {/if}
-          </div>
-
-          <div class="mt-4 rounded-2xl border border-ink-100 bg-ink-50/70 px-4 py-4">
-            <label class="text-sm font-medium text-ink-700" for="mask-preview">置換テスト</label>
-            <textarea
-              id="mask-preview"
-              class="mt-3 min-h-24 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm leading-6 text-ink-700 outline-none transition focus:border-brass-300"
-              bind:value={maskPreviewInput}
-            ></textarea>
-            <div class="mt-3 rounded-2xl border border-dashed border-brass-200 bg-brass-50/60 px-4 py-4 text-sm leading-6 text-ink-700">
-              {maskPreview.text}
             </div>
-            {#if maskPreview.error}
-              <p class="mt-2 text-sm leading-6 text-brass-700">{maskPreview.error}</p>
-            {/if}
+
+            <div class="mt-5 space-y-4">
+              <div>
+                <label class="text-sm font-medium text-ink-700" for="system-prompt">システムプロンプト</label>
+                <textarea
+                  id="system-prompt"
+                  class="mt-3 min-h-32 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm leading-6 text-ink-700 outline-none transition focus:border-brass-300"
+                  bind:value={config.system_prompt}
+                ></textarea>
+              </div>
+
+              <div>
+                <label class="text-sm font-medium text-ink-700" for="user-prompt">ユーザープロンプト</label>
+                <textarea
+                  id="user-prompt"
+                  class="mt-3 min-h-28 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm leading-6 text-ink-700 outline-none transition focus:border-brass-300"
+                  bind:value={config.user_prompt}
+                ></textarea>
+              </div>
+            </div>
           </div>
+
+          <div class="rounded-[1.5rem] border border-ink-100 bg-white px-4 py-4">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <p class="text-sm font-medium text-ink-700">マスキングルール</p>
+                <p class="mt-1 text-sm leading-6 text-ink-500">
+                  CSV エクスポート時に、取引先名や金額などの表現を自動置換します。
+                </p>
+              </div>
+              <button
+                class="rounded-full border border-ink-200 bg-white px-4 py-2 text-sm font-semibold text-ink-700 transition hover:border-brass-300 hover:text-brass-700"
+                type="button"
+                onclick={addMaskRule}
+              >
+                ルールを追加
+              </button>
+            </div>
+
+            <div class="mt-4 space-y-3">
+              {#if config.mask_rules.length === 0}
+                <div class="rounded-2xl border border-dashed border-ink-200 px-4 py-6 text-sm text-ink-400">
+                  まだマスキングルールはありません。必要な場合のみ追加してください。
+                </div>
+              {:else}
+                {#each config.mask_rules as rule, index}
+                  <div class="rounded-2xl border border-ink-100 bg-ink-50/70 px-4 py-4">
+                    <div class="grid gap-3 lg:grid-cols-[1.1fr_0.9fr_auto]">
+                      <input
+                        class="rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300"
+                        type="text"
+                        value={rule.pattern}
+                        placeholder="例: 株式会社A または \\b\\d{3},\\d{3}\\b"
+                        oninput={(event) =>
+                          updateMaskRule(index, {
+                            ...rule,
+                            pattern: (event.currentTarget as HTMLInputElement).value
+                          })}
+                      />
+                      <input
+                        class="rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300"
+                        type="text"
+                        value={rule.replacement}
+                        placeholder="[MASKED]"
+                        oninput={(event) =>
+                          updateMaskRule(index, {
+                            ...rule,
+                            replacement: (event.currentTarget as HTMLInputElement).value
+                          })}
+                      />
+                      <button
+                        class="rounded-full border border-cinnabar-200 bg-cinnabar-50 px-4 py-3 text-sm font-semibold text-cinnabar-700 transition hover:bg-cinnabar-100"
+                        type="button"
+                        onclick={() => removeMaskRule(index)}
+                      >
+                        削除
+                      </button>
+                    </div>
+
+                    <label class="mt-3 flex items-center gap-3 text-sm text-ink-600">
+                      <input
+                        class="h-4 w-4 accent-brass-600"
+                        type="checkbox"
+                        checked={rule.is_regex}
+                        onchange={(event) =>
+                          updateMaskRule(index, {
+                            ...rule,
+                            is_regex: (event.currentTarget as HTMLInputElement).checked
+                          })}
+                      />
+                      正規表現として扱う
+                    </label>
+                  </div>
+                {/each}
+              {/if}
+            </div>
+
+            <div class="mt-4 rounded-2xl border border-ink-100 bg-ink-50/70 px-4 py-4">
+              <label class="text-sm font-medium text-ink-700" for="mask-preview">置換テスト</label>
+              <textarea
+                id="mask-preview"
+                class="mt-3 min-h-24 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm leading-6 text-ink-700 outline-none transition focus:border-brass-300"
+                bind:value={maskPreviewInput}
+              ></textarea>
+              <div class="mt-3 rounded-2xl border border-dashed border-brass-200 bg-brass-50/60 px-4 py-4 text-sm leading-6 text-ink-700">
+                {maskPreview.text}
+              </div>
+              {#if maskPreview.error}
+                <p class="mt-2 text-sm leading-6 text-brass-700">{maskPreview.error}</p>
+              {/if}
+            </div>
+          </div>
+        {/if}
+
+        <div class="flex justify-center">
+          <button
+            type="button"
+            onclick={() => (showAdvanced = !showAdvanced)}
+            class="flex items-center gap-2 rounded-full border border-ink-200 bg-white px-4 py-2 text-sm text-ink-500 transition hover:border-ink-300 hover:text-ink-700"
+          >
+            <span>{showAdvanced ? "詳細設定を隠す" : "詳細設定を表示（プロンプト・マスク等）"}</span>
+            <span class="text-ink-400">{showAdvanced ? "▲" : "▼"}</span>
+          </button>
         </div>
 
         <div class="rounded-2xl border border-ink-100 bg-ink-50/70 px-4 py-4">

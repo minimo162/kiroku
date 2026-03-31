@@ -1,8 +1,15 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
   import type { SetupStatus } from "$lib/types/setup";
+
+  type CopilotConnectionStatus = {
+    connected: boolean;
+    login_required: boolean;
+    url?: string | null;
+    error?: string | null;
+  };
 
   type Step = "welcome" | "edge-setup" | "test-capture" | "complete";
 
@@ -19,6 +26,8 @@
   let status = $state<SetupStatus>({ ...emptyStatus });
   let loading = $state(true);
   let completing = $state(false);
+  let launchingEdge = $state(false);
+  let edgePollInterval = $state<number | null>(null);
   let testingCapture = $state(false);
   let message = $state<string | null>(null);
   let testCaptureMessage = $state<string | null>(null);
@@ -44,16 +53,45 @@
     loading = false;
   }
 
-  async function refreshPrerequisites() {
-    message = null;
-    await loadStatus();
-    if (!status.engine_ready) {
-      message = "Copilot ブリッジの起動要件を満たしていません。Node.js と copilot_server.js を確認してください。";
-    } else if (!status.edge_debugging_ready) {
-      message =
-        "Edge のリモートデバッグ接続を確認できませんでした。--remote-debugging-port=9222 付きで起動してから再試行してください。";
-    } else {
-      message = "Copilot 接続の前提条件を確認できました。";
+  async function launchAndWaitForEdge() {
+    if (!isTauri()) return;
+    if (edgePollInterval !== null) {
+      window.clearInterval(edgePollInterval);
+      edgePollInterval = null;
+    }
+
+    launchingEdge = true;
+    message = "Edge を起動しています...";
+
+    try {
+      const connectionStatus = await invoke<CopilotConnectionStatus>("check_copilot_connection");
+      if (connectionStatus.connected || connectionStatus.login_required) {
+        message = "Edge に接続しました。M365 Copilot にログインして「次へ」を押してください。";
+        await loadStatus();
+        currentStep = "edge-setup";
+      } else {
+        message = "接続を待機しています...";
+        edgePollInterval = window.setInterval(async () => {
+          try {
+            const polledStatus = await invoke<CopilotConnectionStatus>("check_copilot_connection");
+            if (polledStatus.connected || polledStatus.login_required) {
+              if (edgePollInterval !== null) {
+                window.clearInterval(edgePollInterval);
+                edgePollInterval = null;
+              }
+              message = "Edge に接続しました。M365 Copilot にログインして「次へ」を押してください。";
+              await loadStatus();
+              currentStep = "edge-setup";
+            }
+          } catch {
+            // ポーリング中の一時的な失敗は無視する。
+          }
+        }, 2000);
+      }
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    } finally {
+      launchingEdge = false;
     }
   }
 
@@ -94,6 +132,12 @@
 
     if (!tauriAvailable) {
       message = "ブラウザプレビューでは初回セットアップを実行できません。";
+    }
+  });
+
+  onDestroy(() => {
+    if (edgePollInterval !== null) {
+      window.clearInterval(edgePollInterval);
     }
   });
 </script>
@@ -190,32 +234,34 @@
             <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">Edge 準備</p>
             <h2 class="mt-2 text-3xl font-bold text-ink-900">Edge をデバッグ起動します</h2>
           </div>
-          <div class="rounded-[1.5rem] border border-ink-100 bg-ink-50/70 px-5 py-5 text-sm leading-7 text-ink-600">
-            <ol class="list-decimal space-y-2 pl-5">
-              <li>Edge を `--remote-debugging-port=9222` 付きで起動</li>
-              <li>`https://m365.cloud.microsoft/chat/` を開いて M365 にログイン</li>
-              <li>必要なら設定画面で Edge CDP ポートを変更</li>
-            </ol>
-            <p class="mt-4">
-              確認先 URL:
-              <span class="font-medium text-ink-900">{status.edge_debugging_url}</span>
+          <div class="space-y-4">
+            <p class="text-sm leading-7 text-ink-600">
+              「起動して接続確認」を押すと、Edge が自動的にデバッグモードで起動し Copilot ページを開きます。
+              その後、M365 アカウントでのログインを確認してください。
             </p>
-          </div>
-          <div class="flex flex-wrap gap-3">
+
             <button
-              class="rounded-full bg-ink-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-ink-700"
-              onclick={refreshPrerequisites}
+              type="button"
+              onclick={launchAndWaitForEdge}
+              disabled={launchingEdge || !tauriAvailable}
+              class="w-full rounded-2xl bg-ink-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              接続を確認
+              {launchingEdge ? "Edge を起動中..." : "Edge を起動して接続確認"}
             </button>
-            <button
-              class="rounded-full border border-ink-200 bg-white px-5 py-3 text-sm font-semibold text-ink-700 transition hover:border-brass-300 hover:text-brass-700"
-              onclick={() => {
-                currentStep = "test-capture";
-              }}
-            >
-              確認をスキップ
-            </button>
+
+            {#if message}
+              <p class="text-sm leading-6 text-ink-600">{message}</p>
+            {/if}
+
+            {#if status.edge_debugging_ready}
+              <button
+                type="button"
+                onclick={() => (currentStep = "test-capture")}
+                class="w-full rounded-2xl border border-brass-300 bg-brass-50 px-5 py-3 text-sm font-semibold text-brass-700 transition hover:bg-brass-100"
+              >
+                接続を確認しました — 次へ
+              </button>
+            {/if}
           </div>
         </div>
       {:else if currentStep === "test-capture"}
@@ -271,7 +317,7 @@
         </div>
       {/if}
 
-      {#if message}
+      {#if message && currentStep !== "edge-setup"}
         <div class="mt-5 rounded-[1.25rem] border border-brass-100 bg-brass-50 px-4 py-3 text-sm text-brass-800">
           {message}
         </div>

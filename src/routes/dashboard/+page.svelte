@@ -344,6 +344,25 @@
   <div class="overflow-hidden rounded-[2rem] border border-white/70 bg-white/80 shadow-panel backdrop-blur">
     <div class="grid gap-6 px-6 py-6 lg:grid-cols-[1.2fr_0.8fr] lg:px-8">
       <div class="space-y-5">
+        {#if stats.is_recording}
+          <div class="flex items-center gap-3 rounded-2xl border border-cinnabar-200 bg-cinnabar-50 px-4 py-3">
+            <span class="relative flex h-3 w-3 flex-shrink-0">
+              <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-cinnabar-400 opacity-75"></span>
+              <span class="relative inline-flex h-3 w-3 rounded-full bg-cinnabar-500"></span>
+            </span>
+            <div>
+              <p class="text-sm font-semibold text-cinnabar-900">記録中</p>
+              <p class="text-xs text-cinnabar-600">
+                最終キャプチャ: {formatDateTime(stats.last_capture_at)}
+              </p>
+            </div>
+          </div>
+        {:else}
+          <div class="flex items-center gap-3 rounded-2xl border border-ink-200 bg-ink-50 px-4 py-3">
+            <span class="h-3 w-3 flex-shrink-0 rounded-full bg-ink-300"></span>
+            <p class="text-sm text-ink-500">記録は停止中です — 開始するには「記録開始」を押してください</p>
+          </div>
+        {/if}
         <div class="inline-flex items-center rounded-full border border-brass-200 bg-brass-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-brass-700">
           リアルタイム
         </div>
@@ -355,7 +374,7 @@
           </p>
         </div>
 
-        <div class="flex flex-wrap gap-3">
+        <div class="flex flex-wrap items-center gap-3">
           <button
             class={`rounded-full px-5 py-3 text-sm font-semibold text-white transition ${
               stats.is_recording ? "bg-cinnabar-600 hover:bg-cinnabar-500" : "bg-ink-900 hover:bg-ink-700"
@@ -372,8 +391,10 @@
             {/if}
           </button>
 
+          <span class="h-4 w-px bg-ink-200"></span>
+
           <button
-            class="rounded-full border border-ink-200 bg-white px-5 py-3 text-sm font-semibold text-ink-700 transition hover:border-brass-300 hover:text-brass-700 disabled:cursor-not-allowed disabled:opacity-60"
+            class="rounded-full px-4 py-2 text-sm font-medium text-ink-400 transition hover:text-ink-700 disabled:cursor-not-allowed disabled:opacity-60"
             onclick={runBatch}
             disabled={!tauriAvailable || actionPending !== null || stats.batch_running}
           >
