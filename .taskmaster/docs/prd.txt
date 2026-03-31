@@ -366,7 +366,7 @@ Kiroku が出力した CSV ファイル（UTF-8 BOM付き）
 |業務PCへのソフトウェアインストールに制限がある|展開できない         |perUserインストール（管理者権限不要）で対応済み / IT部門との事前調整       |
 |Copilot Excelのトークン制限    |大量データの分析に制約    |日次CSV（1日分ずつ）で投入 / 要約済みデータに前処理                       |
 |バックグラウンド動作がPC性能に影響      |業務に支障          |スクショ取得・差分検出は軽量（<50ms）/ VLM推論はバッチのみ                  |
-|Tauri v2 の WiX テンプレート制約    |perUser MSI ビルド失敗|Tauri v2 は `installScope` 設定未対応。カスタム WiX テンプレート (`wix/main.wxs`) で `InstallScope="perUser"` + `LocalAppDataFolder` を直接指定。標準ディレクトリID に `Name` 属性を付けると `light.exe` リンクエラーになるため注意|
+|Tauri v2 の WiX テンプレート制約    |perUser MSI ビルド失敗|カスタム WiX テンプレート (`wix/main.wxs`) で `InstallScope="perUser"` と `LocalAppDataFolder` を使用。標準ディレクトリID への `Name` 属性付与を避け、アーキテクチャ依存の `[System64Folder]msiexec.exe` を `[SystemFolder]msiexec.exe` に修正して perUser テンプレートのリンク互換性を確保|
 
 -----
 
