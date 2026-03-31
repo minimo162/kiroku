@@ -1,9 +1,8 @@
 use std::{env, fs, io, path::Path, time::Instant};
 
 use futures_util::StreamExt;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_LENGTH, ETAG};
+use reqwest::header::{HeaderMap, CONTENT_LENGTH};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, State};
 use thiserror::Error;
 
@@ -252,18 +251,15 @@ async fn download_artifact(
 ) -> Result<(), ModelManagerError> {
     let response = client.get(url).send().await?.error_for_status()?;
     let total_bytes = content_length(response.headers());
-    let expected_hash = expected_hash(response.headers());
     let mut stream = response.bytes_stream();
     let started_at = Instant::now();
     let tmp_path = destination.with_extension("download");
     let mut file = tokio::fs::File::create(&tmp_path).await?;
     let mut downloaded_bytes = 0_u64;
-    let mut hasher = Sha256::new();
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
         tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await?;
-        hasher.update(&chunk);
         downloaded_bytes += chunk.len() as u64;
 
         emit_progress(
@@ -287,18 +283,22 @@ async fn download_artifact(
     tokio::io::AsyncWriteExt::flush(&mut file).await?;
     drop(file);
 
-    let actual_hash = format!("{:x}", hasher.finalize());
-    if let Some(expected_hash) = expected_hash {
-        if !skip_checksum && actual_hash != expected_hash {
-            eprintln!(
-                "checksum mismatch for {file_name}: expected={expected_hash}, actual={actual_hash}"
-            );
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            return Err(ModelManagerError::ChecksumMismatch {
-                file_name: file_name.to_string(),
-                expected: expected_hash,
-                actual: actual_hash,
-            });
+    // ファイルサイズ検証（Content-Length との比較）
+    // Note: HuggingFace の etag は Git LFS OID であり、HTTP レスポンスボディの
+    // SHA256 とは一致しないため、ハッシュ比較ではなくサイズ検証を行う
+    if !skip_checksum {
+        if let Some(expected_size) = total_bytes {
+            if downloaded_bytes != expected_size {
+                eprintln!(
+                    "size mismatch for {file_name}: expected={expected_size}, actual={downloaded_bytes}"
+                );
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                return Err(ModelManagerError::ChecksumMismatch {
+                    file_name: file_name.to_string(),
+                    expected: format!("{expected_size} bytes"),
+                    actual: format!("{downloaded_bytes} bytes"),
+                });
+            }
         }
     }
 
@@ -332,19 +332,6 @@ fn content_length(headers: &HeaderMap) -> Option<u64> {
         .get(CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
-}
-
-fn expected_hash(headers: &HeaderMap) -> Option<String> {
-    extract_hash(headers.get("x-linked-etag")).or_else(|| extract_hash(headers.get(ETAG)))
-}
-
-fn extract_hash(value: Option<&HeaderValue>) -> Option<String> {
-    let value = value?.to_str().ok()?.trim_matches('"').to_ascii_lowercase();
-    if value.len() == 64 && value.chars().all(|char| char.is_ascii_hexdigit()) {
-        Some(value)
-    } else {
-        None
-    }
 }
 
 fn percentage(downloaded_bytes: u64, total_bytes: Option<u64>) -> f64 {
@@ -410,25 +397,10 @@ fn emit_progress(app: &AppHandle, progress: ModelDownloadProgress) {
 
 #[cfg(test)]
 mod tests {
-    use reqwest::header::HeaderValue;
-
     use super::{
-        build_download_client, extract_hash, format_remaining, percentage,
-        DEFAULT_MMPROJ_FILE_NAME, DEFAULT_MODEL_FILE_NAME, MODEL_REPO_BASE,
+        build_download_client, format_remaining, percentage, DEFAULT_MMPROJ_FILE_NAME,
+        DEFAULT_MODEL_FILE_NAME, MODEL_REPO_BASE,
     };
-
-    #[test]
-    fn extract_hash_accepts_sha256_etag() {
-        let hash = extract_hash(Some(&HeaderValue::from_static(
-            "\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"",
-        )))
-        .expect("hash should parse");
-
-        assert_eq!(
-            hash,
-            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-        );
-    }
 
     #[test]
     fn percentage_returns_zero_without_total() {
