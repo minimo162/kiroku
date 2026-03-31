@@ -366,7 +366,7 @@ Kiroku が出力した CSV ファイル（UTF-8 BOM付き）
 |業務PCへのソフトウェアインストールに制限がある|展開できない         |perUserインストール（管理者権限不要）で対応済み / IT部門との事前調整       |
 |Copilot Excelのトークン制限    |大量データの分析に制約    |日次CSV（1日分ずつ）で投入 / 要約済みデータに前処理                       |
 |バックグラウンド動作がPC性能に影響      |業務に支障          |スクショ取得・差分検出は軽量（<50ms）/ VLM推論はバッチのみ                  |
-|Tauri v2 の WiX テンプレート制約    |perUser MSI ビルド失敗|**修正中（タスク33）**。Tauri v2 は `installScope` 設定未対応のためカスタム WiX テンプレートが必須。`light.exe` 手動実行で ICE38 エラーを特定: perUser ディレクトリ（LocalAppDataFolder）にインストールするコンポーネントは `File KeyPath` ではなく `HKCU RegistryValue KeyPath` を使う必要がある。対象: メインバイナリ（Path）と sidecar（llama-server.exe）の2コンポーネント。修正内容: 各コンポーネントの `<File KeyPath="yes">` を削除し `<RegistryValue Root="HKCU" KeyPath="yes">` を追加|
+|Tauri v2 の WiX テンプレート制約    |perUser MSI ビルド失敗|**ICE38 修正済み・追加エラー調査中（タスク33）**。Path / binaries コンポーネントの KeyPath を HKCU レジストリに変更済みだが、light.exe エラーが継続。Tauri がエラー詳細を握りつぶすため、修正後も毎回 `light.exe` 手動実行で新たな ICE エラーを確認する必要あり。次ステップ: ビルド後に `light.exe` を再実行して残存エラーを特定|
 
 -----
 
