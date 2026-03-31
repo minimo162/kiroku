@@ -467,7 +467,7 @@
           {
             "id": 3,
             "title": "target/release/wix/ キャッシュを削除してリビルドし、ソーステンプレートの変更を反映",
-            "status": "pending"
+            "status": "done"
           },
           {
             "id": 4,
@@ -484,7 +484,7 @@
     ],
     "metadata": {
       "created": "2026-03-30T12:24:28.400Z",
-      "updated": "2026-03-31T00:00:00.000Z",
+      "updated": "2026-03-31T13:21:45+09:00",
       "description": "Tasks for master context"
     }
   }

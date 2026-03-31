@@ -142,7 +142,14 @@
                 {{/each~}}
             </Component>
             <Component Id="Path" Guid="{{path_component_guid}}" Win64="$(var.Win64)">
-                <File Id="Path" Source="{{main_binary_path}}" KeyPath="yes" Checksum="yes"/>
+                <File Id="Path" Source="{{main_binary_path}}" Checksum="yes"/>
+                <RegistryValue
+                    Root="HKCU"
+                    Key="Software\\{{manufacturer}}\\{{product_name}}"
+                    Name="ExecutablePath"
+                    Type="string"
+                    Value="[#Path]"
+                    KeyPath="yes" />
                 {{#each file_associations as |association| ~}}
                 {{#each association.ext as |ext| ~}}
                 <ProgId Id="{{../../product_name}}.{{ext}}" Advertise="yes" Description="{{association.description}}">
@@ -155,7 +162,14 @@
             </Component>
             {{#each binaries as |bin| ~}}
             <Component Id="{{ bin.id }}" Guid="{{bin.guid}}" Win64="$(var.Win64)">
-                <File Id="Bin_{{ bin.id }}" Source="{{bin.path}}" KeyPath="yes"/>
+                <File Id="Bin_{{ bin.id }}" Source="{{bin.path}}"/>
+                <RegistryValue
+                    Root="HKCU"
+                    Key="Software\\{{manufacturer}}\\{{product_name}}"
+                    Name="Sidecar_{{ bin.id }}"
+                    Type="string"
+                    Value="1"
+                    KeyPath="yes" />
             </Component>
             {{/each~}}
             {{#if enable_elevated_update_task}}
