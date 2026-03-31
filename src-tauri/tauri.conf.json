@@ -43,8 +43,7 @@
       },
       "wix": {
         "language": "ja-JP",
-        "installScope": "perUser",
-        "fragmentPaths": ["wix/fragments/data-retention.wxs"],
+        "fragmentPaths": ["wix/fragments/data-retention.wxs", "wix/fragments/per-user-install.wxs"],
         "componentRefs": ["KirokuDataRetentionRegistry"]
       }
     },
