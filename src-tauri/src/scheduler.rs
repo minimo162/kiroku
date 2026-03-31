@@ -10,7 +10,7 @@ use crate::{
     vlm::server::update_vlm_state,
 };
 
-const DEFAULT_BATCH_TIME: &str = "22:00";
+const DEFAULT_BATCH_TIME: &str = "17:30";
 
 pub fn spawn_scheduler(app: AppHandle, state: AppState) {
     let config_rx = state.config_tx.subscribe();
@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn next_run_at_rolls_to_next_day_after_batch_time() {
         let config = AppConfig {
-            batch_time: "22:00".to_string(),
+            batch_time: "17:30".to_string(),
             ..AppConfig::default()
         };
 
@@ -156,6 +156,6 @@ mod tests {
         let next = next_run_at(now, &config).expect("next run should be calculated");
 
         assert_eq!(next.date_naive().to_string(), "2026-04-03");
-        assert_eq!(next.format("%H:%M").to_string(), "22:00");
+        assert_eq!(next.format("%H:%M").to_string(), "17:30");
     }
 }

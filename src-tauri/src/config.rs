@@ -8,7 +8,9 @@ use tauri_plugin_dialog::DialogExt;
 use thiserror::Error;
 
 use crate::{
-    models::AppConfig,
+    models::{
+        default_session_user_prompt, default_system_prompt, default_user_prompt, AppConfig,
+    },
     recorder::{start_recording_inner, stop_recording_inner},
     state::AppState,
     vlm::{
@@ -73,8 +75,53 @@ pub fn load_config(path: &Path, default_data_dir: &Path) -> Result<AppConfig, Co
 
     config.ensure_data_dir(default_data_dir);
     config.vlm_engine = "copilot".to_string();
+    migrate_default_prompts(&mut config);
 
     Ok(config)
+}
+
+fn migrate_default_prompts(config: &mut AppConfig) {
+    const LEGACY_CAPTURE_INTERVAL_SECS: u64 = 30;
+    const LEGACY_BATCH_TIME: &str = "22:00";
+    const PREVIOUS_BATCH_TIME: &str = "18:00";
+    const LEGACY_SYSTEM_PROMPT: &str = concat!(
+        "あなたは経理部門向けの業務記録アシスタントです。画面上で確認できる事実を優先し、",
+        "日本語で簡潔に記述してください。SAP GUI、Excel、Outlook、Teams などの画面を対象とし、",
+        "連結PKG、内部取引消去、UPI、月次決算、メール確認、会議参加などの業務文脈が明確な場合のみ用語を使ってください。",
+        "推測は控えめにし、不確実な場合は一般的な表現に留めてください。"
+    );
+    const LEGACY_USER_PROMPT: &str = concat!(
+        "このスクリーンショットに写っている業務操作を1から3文で説明してください。",
+        "必ず次の観点を含めてください: 使用中のアプリケーション、実行している操作、表示されているデータや対象。",
+        "出力は自然な日本語の文章のみとし、箇条書きやJSONは使わないでください。"
+    );
+    const LEGACY_SESSION_USER_PROMPT: &str = concat!(
+        "これは {start_time} から {end_time} の間（{duration_min}分間）の",
+        "業務画面の流れです。{frame_count} 枚のスクリーンショットを",
+        "時系列順に並べたコラージュを見て、この間に行っていた業務操作を",
+        "1〜3文で説明してください。必ず次の観点を含めてください: ",
+        "使用中のアプリケーション、実行している操作の流れ、",
+        "表示されているデータや対象。",
+        "出力は自然な日本語の文章のみとし、箇条書きや JSON は使わないでください。"
+    );
+
+    if config.capture_interval_secs == LEGACY_CAPTURE_INTERVAL_SECS {
+        config.capture_interval_secs = AppConfig::default().capture_interval_secs;
+    }
+    if config.batch_time == LEGACY_BATCH_TIME || config.batch_time == PREVIOUS_BATCH_TIME {
+        config.batch_time = AppConfig::default().batch_time;
+    }
+    if config.system_prompt.trim().is_empty() || config.system_prompt == LEGACY_SYSTEM_PROMPT {
+        config.system_prompt = default_system_prompt();
+    }
+    if config.user_prompt.trim().is_empty() || config.user_prompt == LEGACY_USER_PROMPT {
+        config.user_prompt = default_user_prompt();
+    }
+    if config.session_user_prompt.trim().is_empty()
+        || config.session_user_prompt == LEGACY_SESSION_USER_PROMPT
+    {
+        config.session_user_prompt = default_session_user_prompt();
+    }
 }
 
 pub fn save_config(path: &Path, config: &AppConfig) -> Result<(), ConfigError> {
@@ -266,6 +313,8 @@ mod tests {
         let config = load_config(&config_path, &data_dir).expect("config should load");
 
         assert_eq!(config.data_dir, data_dir.to_string_lossy());
+        assert_eq!(config.capture_interval_secs, 10);
+        assert_eq!(config.batch_time, "17:30");
 
         fs::remove_dir_all(&data_dir).expect("temporary config directory should be removed");
     }
