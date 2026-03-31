@@ -30,7 +30,24 @@ pub fn process_pending_sessions(
     config: &AppConfig,
 ) -> Result<Vec<SessionRecord>, SessionError> {
     let captures = get_captures_for_session_assembly(conn)?;
-    let sessions = assemble_sessions(captures, config);
+    let sessions = assemble_sessions(captures, config, false);
+    process_session_drafts(conn, config, sessions)
+}
+
+pub fn process_pending_sessions_including_active(
+    conn: &rusqlite::Connection,
+    config: &AppConfig,
+) -> Result<Vec<SessionRecord>, SessionError> {
+    let captures = get_captures_for_session_assembly(conn)?;
+    let sessions = assemble_sessions(captures, config, true);
+    process_session_drafts(conn, config, sessions)
+}
+
+fn process_session_drafts(
+    conn: &rusqlite::Connection,
+    config: &AppConfig,
+    sessions: Vec<Vec<CaptureRecord>>,
+) -> Result<Vec<SessionRecord>, SessionError> {
     let data_dir = Path::new(&config.data_dir);
     let mut created_sessions = Vec::new();
 
@@ -78,7 +95,11 @@ pub fn process_pending_sessions(
     Ok(created_sessions)
 }
 
-fn assemble_sessions(captures: Vec<CaptureRecord>, config: &AppConfig) -> Vec<Vec<CaptureRecord>> {
+fn assemble_sessions(
+    captures: Vec<CaptureRecord>,
+    config: &AppConfig,
+    include_active_session: bool,
+) -> Vec<Vec<CaptureRecord>> {
     let mut sessions = Vec::new();
     let mut current_session = Vec::new();
     let mut current_start = None::<DateTime<FixedOffset>>;
@@ -116,6 +137,11 @@ fn assemble_sessions(captures: Vec<CaptureRecord>, config: &AppConfig) -> Vec<Ve
     }
 
     if current_session.is_empty() {
+        return sessions;
+    }
+
+    if include_active_session {
+        sessions.push(current_session);
         return sessions;
     }
 
@@ -244,7 +270,7 @@ mod tests {
             capture("d", "2024-01-01T10:30:00+09:00", None),
         ];
 
-        let sessions = assemble_sessions(captures, &config);
+        let sessions = assemble_sessions(captures, &config, true);
 
         assert_eq!(sessions.len(), 3);
         assert_eq!(sessions[0].len(), 2);

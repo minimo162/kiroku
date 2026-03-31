@@ -36,6 +36,7 @@ struct BatchOptions {
     n_threads: usize,
     stop_server_when_done: bool,
     notify_on_completion: bool,
+    include_active_session: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +48,7 @@ pub struct RunBatchRequest {
     pub max_concurrency: Option<usize>,
     pub stop_server_when_done: bool,
     pub notify_on_completion: bool,
+    pub include_active_session: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -79,6 +81,7 @@ pub async fn run_vlm_batch(
             max_concurrency,
             stop_server_when_done: false,
             notify_on_completion: false,
+            include_active_session: true,
         },
     )
     .await
@@ -145,6 +148,7 @@ pub async fn run_vlm_batch_inner(
         n_threads: request.n_threads.unwrap_or_else(default_thread_count),
         stop_server_when_done: request.stop_server_when_done,
         notify_on_completion: request.notify_on_completion,
+        include_active_session: request.include_active_session,
     };
     let batch_state = state.clone();
     let batch_app = app.clone();
@@ -483,7 +487,12 @@ async fn run_session_batch_loop(
 ) {
     {
         let db = state.db.lock().await;
-        if let Err(error) = process_pending_sessions(&db, &config) {
+        let session_result = if options.include_active_session {
+            crate::session::process_pending_sessions_including_active(&db, &config)
+        } else {
+            process_pending_sessions(&db, &config)
+        };
+        if let Err(error) = session_result {
             finish_batch(
                 &app,
                 &state,

@@ -282,6 +282,8 @@
           lastBatchResult = event.payload;
           if (event.payload.error) {
             addToast("error", `説明文の生成中にエラーが発生しました: ${event.payload.error}`);
+          } else if (event.payload.total === 0) {
+            addToast("info", "未処理の説明文生成対象はありません。");
           }
           await refreshDashboard();
         }

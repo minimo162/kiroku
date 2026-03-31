@@ -79,6 +79,7 @@ async fn run_scheduled_batch(app: AppHandle, state: AppState) -> Result<(), Stri
             max_concurrency: Some(1),
             stop_server_when_done: true,
             notify_on_completion: true,
+            include_active_session: false,
         },
     )
     .await?;

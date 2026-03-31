@@ -20,8 +20,25 @@ const NEW_CHAT_BUTTON_SELECTOR = "[data-testid=\"newChatButton\"]";
 const SEND_BUTTON_SELECTOR =
   ".fai-SendButton:not([disabled]), button[aria-label*=\"Send\"]:not([disabled]), button[aria-label*=\"送信\"]:not([disabled])";
 const STOP_BUTTON_SELECTOR = ".fai-SendButton__stopBackground";
-const PLUS_BUTTON_SELECTOR = "[data-testid=\"PlusMenuButton\"]";
-const FILE_INPUT_SELECTOR = "[data-testid=\"uploadFileDialogInput\"]";
+const PLUS_BUTTON_SELECTORS = [
+  "[data-testid=\"PlusMenuButton\"]",
+  "button[aria-label*=\"Add\"]",
+  "button[aria-label*=\"Upload\"]",
+  "button[aria-label*=\"添付\"]",
+  "button[aria-label*=\"アップロード\"]"
+] as const;
+const FILE_INPUT_SELECTORS = [
+  "[data-testid=\"uploadFileDialogInput\"]",
+  "input[type=\"file\"][accept*=\"image\"]",
+  "input[type=\"file\"]"
+] as const;
+const ATTACHMENT_READY_SELECTORS = [
+  "[data-testid*=\"attachment\"]",
+  "[data-testid*=\"upload\"]",
+  "[data-testid*=\"image\"]",
+  "[aria-label*=\"Remove attachment\"]",
+  "[aria-label*=\"添付を削除\"]"
+] as const;
 const RESPONSE_SELECTORS = [
   "[data-testid=\"markdown-reply\"]",
   "div[data-message-type=\"Chat\"]",
@@ -241,21 +258,82 @@ async function uploadImage(page: Page, imageB64: string): Promise<string> {
   const tmpPath = path.join(os.tmpdir(), `kiroku-${Date.now()}.png`);
   await fs.promises.writeFile(tmpPath, Buffer.from(imageB64, "base64"));
 
-  const plusButton = page.locator(PLUS_BUTTON_SELECTOR).first();
-  if ((await plusButton.count()) > 0) {
+  const plusButton = await findFirstLocator(page, PLUS_BUTTON_SELECTORS);
+  if (plusButton) {
     await plusButton.click({ timeout: 10_000 }).catch(() => {});
     await page.waitForTimeout(300);
   }
 
-  const fileInput = page.locator(FILE_INPUT_SELECTOR).first();
-  if ((await fileInput.count()) > 0) {
-    await fileInput.setInputFiles(tmpPath);
-    await page.waitForTimeout(1_000);
-  } else {
-    console.error("[copilot] file upload input not found, proceeding without image");
+  const fileInput = await findFirstLocator(page, FILE_INPUT_SELECTORS);
+  if (!fileInput) {
+    throw new Error("Copilot upload input not found");
   }
 
+  await fileInput.setInputFiles(tmpPath);
+  await waitForAttachmentReady(page, path.basename(tmpPath));
+
   return tmpPath;
+}
+
+async function findFirstLocator(
+  page: Page,
+  selectors: readonly string[]
+): Promise<ReturnType<Page["locator"]> | null> {
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    if ((await locator.count()) > 0) {
+      return locator;
+    }
+  }
+
+  return null;
+}
+
+async function waitForAttachmentReady(page: Page, fileName: string): Promise<void> {
+  const deadline = Date.now() + 15_000;
+
+  while (Date.now() < deadline) {
+    const hasAttachedFile = await page
+      .locator("input[type=\"file\"]")
+      .evaluateAll((elements) =>
+        elements.some((element) => {
+          if (!(element instanceof HTMLInputElement)) {
+            return false;
+          }
+
+          return (element.files?.length ?? 0) > 0;
+        })
+      )
+      .catch(() => false);
+
+    if (hasAttachedFile) {
+      return;
+    }
+
+    const fileNameVisible = await page
+      .getByText(fileName, { exact: false })
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (fileNameVisible) {
+      return;
+    }
+
+    for (const selector of ATTACHMENT_READY_SELECTORS) {
+      const visible = await page
+        .locator(selector)
+        .first()
+        .isVisible()
+        .catch(() => false);
+      if (visible) {
+        return;
+      }
+    }
+
+    await page.waitForTimeout(250);
+  }
+
+  throw new Error("Copilot image attachment could not be confirmed");
 }
 
 function createServer(session: CopilotSession): http.Server {

@@ -13,8 +13,25 @@ var INPUT_SELECTOR = '#m365-chat-editor-target-element, [data-lexical-editor="tr
 var NEW_CHAT_BUTTON_SELECTOR = '[data-testid="newChatButton"]';
 var SEND_BUTTON_SELECTOR = '.fai-SendButton:not([disabled]), button[aria-label*="Send"]:not([disabled]), button[aria-label*="\u9001\u4FE1"]:not([disabled])';
 var STOP_BUTTON_SELECTOR = ".fai-SendButton__stopBackground";
-var PLUS_BUTTON_SELECTOR = '[data-testid="PlusMenuButton"]';
-var FILE_INPUT_SELECTOR = '[data-testid="uploadFileDialogInput"]';
+var PLUS_BUTTON_SELECTORS = [
+  '[data-testid="PlusMenuButton"]',
+  'button[aria-label*="Add"]',
+  'button[aria-label*="Upload"]',
+  'button[aria-label*="\u6DFB\u4ED8"]',
+  'button[aria-label*="\u30A2\u30C3\u30D7\u30ED\u30FC\u30C9"]'
+];
+var FILE_INPUT_SELECTORS = [
+  '[data-testid="uploadFileDialogInput"]',
+  'input[type="file"][accept*="image"]',
+  'input[type="file"]'
+];
+var ATTACHMENT_READY_SELECTORS = [
+  '[data-testid*="attachment"]',
+  '[data-testid*="upload"]',
+  '[data-testid*="image"]',
+  '[aria-label*="Remove attachment"]',
+  '[aria-label*="\u6DFB\u4ED8\u3092\u524A\u9664"]'
+];
 var RESPONSE_SELECTORS = [
   '[data-testid="markdown-reply"]',
   'div[data-message-type="Chat"]',
@@ -177,20 +194,56 @@ async function waitForDomResponse(page) {
 async function uploadImage(page, imageB64) {
   const tmpPath = path.join(os.tmpdir(), `kiroku-${Date.now()}.png`);
   await fs.promises.writeFile(tmpPath, Buffer.from(imageB64, "base64"));
-  const plusButton = page.locator(PLUS_BUTTON_SELECTOR).first();
-  if (await plusButton.count() > 0) {
+  const plusButton = await findFirstLocator(page, PLUS_BUTTON_SELECTORS);
+  if (plusButton) {
     await plusButton.click({ timeout: 1e4 }).catch(() => {
     });
     await page.waitForTimeout(300);
   }
-  const fileInput = page.locator(FILE_INPUT_SELECTOR).first();
-  if (await fileInput.count() > 0) {
-    await fileInput.setInputFiles(tmpPath);
-    await page.waitForTimeout(1e3);
-  } else {
-    console.error("[copilot] file upload input not found, proceeding without image");
+  const fileInput = await findFirstLocator(page, FILE_INPUT_SELECTORS);
+  if (!fileInput) {
+    throw new Error("Copilot upload input not found");
   }
+  await fileInput.setInputFiles(tmpPath);
+  await waitForAttachmentReady(page, path.basename(tmpPath));
   return tmpPath;
+}
+async function findFirstLocator(page, selectors) {
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    if (await locator.count() > 0) {
+      return locator;
+    }
+  }
+  return null;
+}
+async function waitForAttachmentReady(page, fileName) {
+  const deadline = Date.now() + 15e3;
+  while (Date.now() < deadline) {
+    const hasAttachedFile = await page.locator('input[type="file"]').evaluateAll(
+      (elements) => elements.some((element) => {
+        if (!(element instanceof HTMLInputElement)) {
+          return false;
+        }
+        return (element.files?.length ?? 0) > 0;
+      })
+    ).catch(() => false);
+    if (hasAttachedFile) {
+      return;
+    }
+    const fileNameVisible = await page.getByText(fileName, { exact: false }).first().isVisible().catch(() => false);
+    if (fileNameVisible) {
+      return;
+    }
+    for (const selector of ATTACHMENT_READY_SELECTORS) {
+      const visible = await page.locator(selector).first().isVisible().catch(() => false);
+      if (visible) {
+        return;
+      }
+    }
+    await page.waitForTimeout(250);
+  }
+  throw new Error("Copilot image attachment could not be confirmed");
 }
 function createServer2(session) {
   return http.createServer(async (req, res) => {
