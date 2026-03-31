@@ -367,6 +367,7 @@ Kiroku が出力した CSV ファイル（UTF-8 BOM付き）
 |Copilot Excelのトークン制限    |大量データの分析に制約    |日次CSV（1日分ずつ）で投入 / 要約済みデータに前処理                       |
 |バックグラウンド動作がPC性能に影響      |業務に支障          |スクショ取得・差分検出は軽量（<50ms）/ VLM推論はバッチのみ                  |
 |Tauri v2 の WiX テンプレート制約    |perUser MSI ビルド成功|**解決済み（タスク33）**。カスタム WiX テンプレートで `InstallScope="perUser"` + `LocalAppDataFolder` を使用。ICE38 (KeyPath を HKCU レジストリに変更) と ICE03 (Handlebars `{{#each}}` ループ内で `{{../manufacturer}}` 親スコープ参照) を修正。ビルド時は `target/release/wix/` キャッシュ削除が必要な場合あり|
+|VLMモデルのダウンロード失敗          |初回セットアップ不能    |**未解決（タスク34）**。`model_manager.rs` の `download_artifact()` で Hugging Face からのダウンロードが `failed to download model file` (reqwest エラー) で失敗。社内プロキシ・ファイアウォール・DNS解決・GGUF ファイルサイズ（Q4_K_M: 約600MB + mmproj: 約300MB）等のネットワーク要因を調査中|
 
 -----
 
