@@ -447,13 +447,34 @@
         "title": "WiX light.exe リンクエラーの調査と perUser MSI ビルド修正",
         "description": "カスタム WiX テンプレート (wix/main.wxs) で InstallScope=\"perUser\" + LocalAppDataFolder に変更した結果、light.exe の ICE38 バリデーションエラーでビルドが失敗する。perUser ディレクトリにインストールするコンポーネントの KeyPath をファイルから HKCU レジストリに変更する必要がある。",
         "details": "**根本原因（light.exe 手動実行で特定）:**\n- ICE38 エラー x2:\n  - `Component Path installs to user profile. It must use a registry key under HKCU as its KeyPath, not a file.`\n  - `Component llama_server.exe installs to user profile. It must use a registry key under HKCU as its KeyPath, not a file.`\n- WiX の ICE38 ルール: `LocalAppDataFolder`（ユーザープロファイル配下）にファイルをインストールするコンポーネントは、`<File KeyPath=\"yes\">` ではなく `<RegistryValue Root=\"HKCU\" KeyPath=\"yes\">` を使う必要がある\n\n**修正方針:**\n1. `Path` コンポーネント（メインバイナリ `kiroku.exe`）:\n   - `<File Id=\"Path\" KeyPath=\"yes\">` から `KeyPath=\"yes\"` を削除\n   - `<RegistryValue Root=\"HKCU\" Key=\"Software\\\\{{manufacturer}}\\\\{{product_name}}\" Name=\"ExecutablePath\" Type=\"string\" Value=\"[INSTALLDIR]\" KeyPath=\"yes\" />` を追加\n2. `binaries` コンポーネント（sidecar `llama-server.exe`）:\n   - `<File Id=\"Bin_{{ bin.id }}\" KeyPath=\"yes\">` から `KeyPath=\"yes\"` を削除\n   - `<RegistryValue Root=\"HKCU\" Key=\"Software\\\\{{manufacturer}}\\\\{{product_name}}\" Name=\"Sidecar_{{ bin.id }}\" Type=\"string\" Value=\"1\" KeyPath=\"yes\" />` を追加\n\n**その他の warning（修正不要）:**\n- ICE91 (warning): perUser ディレクトリのファイルは他ユーザーにコピーされない → perUser 専用なので意図通り\n- ICE90 (warning): UninstallShortcut が public property 配下 → perUser なので問題なし\n- ICE61 (warning): MajorUpgrade に Maximum version なし → Tauri デフォルトの動作\n- ICE40 (warning): REINSTALLMODE プロパティ定義 → Tauri デフォルトの動作\n- ICE03 (warning): CustomAction Target 文字列オーバーフロー → WebView2 BootStrapper の長いコマンドライン、Tauri デフォルト\n\n**light.exe 手動実行コマンド（デバッグ用）:**\n```\n& \"$env:LOCALAPPDATA/tauri/WixTools314/light.exe\" -ext WixUIExtension -loc \"src-tauri/target/release/wix/x64/locale.wxl\" -out test.msi \"src-tauri/target/release/wix/x64/main.wixobj\" \"src-tauri/target/release/wix/x64/data-retention.wixobj\"\n```\n\n**試行した未解決アプローチ（記録）:**\n- `installScope` 設定フィールド → Tauri v2 では未サポート\n- WiX フラグメントで `ALLUSERS=2` / `MSIINSTALLPERUSER=1` → Package InstallScope が優先\n- `PlatformProgramFilesFolder` を `LocalAppDataFolder` に変更 → ICE38 エラー（本タスク）\n- `Name=\"PFiles\"` 属性除去 → ICE38 は別の問題だった",
-        "testStrategy": "修正後のカスタム WiX テンプレートで `npm run tauri build` が成功し、生成された MSI を標準ユーザー（管理者権限なし）で実行して UAC 昇格なしにインストールが完了することを確認する。",
+        "testStrategy": "1. `npm run tauri build` で MSI ビルドが成功すること（light.exe エラーなし）\n2. light.exe 手動実行で ICE38 エラーが出ないことを確認\n3. 生成された MSI を標準ユーザー（管理者権限なし）で実行して UAC 昇格なしにインストールが完了すること\n4. インストール先が `%LOCALAPPDATA%/Kiroku` であること\n5. アプリが正常起動し、llama-server sidecar も起動できること",
         "priority": "high",
         "dependencies": [
           20
         ],
-        "status": "done",
-        "subtasks": []
+        "status": "in-progress",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "wix/main.wxs の Path コンポーネント修正: File KeyPath → HKCU RegistryValue KeyPath",
+            "status": "pending"
+          },
+          {
+            "id": 2,
+            "title": "wix/main.wxs の binaries コンポーネント修正: File KeyPath → HKCU RegistryValue KeyPath",
+            "status": "pending"
+          },
+          {
+            "id": 3,
+            "title": "Windows で npm run tauri build を実行し MSI ビルド成功を確認",
+            "status": "pending"
+          },
+          {
+            "id": 4,
+            "title": "生成された MSI を標準ユーザーで実行し管理者権限不要を確認",
+            "status": "pending"
+          }
+        ]
       }
     ],
     "metadata": {
