@@ -42,7 +42,7 @@ pub struct AppConfig {
     pub max_frames_per_collage: u32,
     pub scheduler_enabled: bool,
     pub setup_complete: bool,
-    pub batch_time: String,
+    pub batch_times: Vec<String>,
     pub vlm_engine: String,
     pub vlm_host: String,
     pub vlm_max_tokens: u32,
@@ -67,7 +67,7 @@ impl Default for AppConfig {
             max_frames_per_collage: 6,
             scheduler_enabled: true,
             setup_complete: false,
-            batch_time: "17:30".to_string(),
+            batch_times: vec!["12:00".to_string(), "17:30".to_string()],
             vlm_engine: "copilot".to_string(),
             vlm_host: "127.0.0.1:8080".to_string(),
             vlm_max_tokens: 256,
@@ -127,14 +127,17 @@ pub fn default_user_prompt() -> String {
 
 pub fn default_session_user_prompt() -> String {
     concat!(
-        "これは {start_time} から {end_time} の間（{duration_min}分間）の",
-        "業務画面の流れです。{frame_count} 枚のスクリーンショットを",
-        "時系列順に並べたコラージュを見て、この間に行っていた業務操作を",
-        "1〜3文で説明してください。必ず次の観点を含めてください: ",
-        "使用中のアプリケーション、実行している操作の流れ、",
-        "表示されているデータや対象、画面内で読み取れる固有ラベルや表題。",
+        "これは {start_time} から {end_time} の間（{duration_min}分間）の業務画面を",
+        "{frame_count} 枚のスクリーンショットにまとめたコラージュです。",
+        "画像は左上から右下へ時系列順に並んでいます。\n",
+        "この間の業務操作の流れを2〜5文で説明してください。",
+        "必ず次の観点を含めてください:\n",
+        "  使用中のアプリケーション、",
+        "最初に何をしていたか・途中でどう変化したか・最後の状態、",
+        "画面内で読み取れる固有ラベル・表題・件数・ボタン名。\n",
         "入力内容や意図は画面から裏付けられる範囲に限定し、",
-        "単に画面を追っているだけに見える場合は確認・閲覧の流れとして記述してください。",
+        "単に画面を確認しているだけに見える場合は「〇〇を確認・閲覧している」と記述してください。",
+        "業務と無関係な画面（ブラウザのニュース閲覧等）が含まれる場合はその旨も明記してください。",
         "出力は自然な日本語の文章のみとし、箇条書きや JSON は使わないでください。"
     )
     .to_string()
@@ -183,7 +186,7 @@ mod tests {
             max_frames_per_collage: 6,
             scheduler_enabled: true,
             setup_complete: true,
-            batch_time: "23:15".to_string(),
+            batch_times: vec!["12:00".to_string(), "17:30".to_string()],
             vlm_engine: "copilot".to_string(),
             vlm_host: "127.0.0.1:8181".to_string(),
             vlm_max_tokens: 384,

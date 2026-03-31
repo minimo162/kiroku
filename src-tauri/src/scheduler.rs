@@ -10,7 +10,7 @@ use crate::{
     vlm::server::update_vlm_state,
 };
 
-const DEFAULT_BATCH_TIME: &str = "17:30";
+const DEFAULT_BATCH_TIMES: &[&str] = &["12:00", "17:30"];
 
 pub fn spawn_scheduler(app: AppHandle, state: AppState) {
     let config_rx = state.config_tx.subscribe();
@@ -101,21 +101,42 @@ pub fn next_run_at(now: DateTime<Local>, config: &AppConfig) -> Option<DateTime<
         return None;
     }
 
-    let batch_time = NaiveTime::parse_from_str(&config.batch_time, "%H:%M").unwrap_or_else(|_| {
-        NaiveTime::parse_from_str(DEFAULT_BATCH_TIME, "%H:%M")
-            .expect("default batch time should parse")
-    });
+    let parsed_times = if config.batch_times.is_empty() {
+        DEFAULT_BATCH_TIMES
+            .iter()
+            .filter_map(|time| NaiveTime::parse_from_str(time, "%H:%M").ok())
+            .collect::<Vec<_>>()
+    } else {
+        let configured = config
+            .batch_times
+            .iter()
+            .filter_map(|time| NaiveTime::parse_from_str(time, "%H:%M").ok())
+            .collect::<Vec<_>>();
 
-    let mut next_run = now.date_naive().and_time(batch_time);
-    if next_run <= now.naive_local() {
-        next_run += chrono::Duration::days(1);
-    }
+        if configured.is_empty() {
+            DEFAULT_BATCH_TIMES
+                .iter()
+                .filter_map(|time| NaiveTime::parse_from_str(time, "%H:%M").ok())
+                .collect::<Vec<_>>()
+        } else {
+            configured
+        }
+    };
 
-    match Local.from_local_datetime(&next_run) {
-        LocalResult::Single(value) => Some(value),
-        LocalResult::Ambiguous(earliest, _) => Some(earliest),
-        LocalResult::None => None,
-    }
+    parsed_times
+        .iter()
+        .flat_map(|time| {
+            let today = now.date_naive().and_time(*time);
+            let tomorrow = today + chrono::Duration::days(1);
+            [today, tomorrow]
+        })
+        .filter_map(|candidate| match Local.from_local_datetime(&candidate) {
+            LocalResult::Single(value) => Some(value),
+            LocalResult::Ambiguous(earliest, _) => Some(earliest),
+            LocalResult::None => None,
+        })
+        .filter(|candidate| *candidate > now)
+        .min()
 }
 
 #[cfg(test)]
@@ -142,9 +163,9 @@ mod tests {
     }
 
     #[test]
-    fn next_run_at_rolls_to_next_day_after_batch_time() {
+    fn next_run_at_rolls_to_next_day_after_last_batch_time() {
         let config = AppConfig {
-            batch_time: "17:30".to_string(),
+            batch_times: vec!["17:30".to_string()],
             ..AppConfig::default()
         };
 
@@ -157,5 +178,59 @@ mod tests {
 
         assert_eq!(next.date_naive().to_string(), "2026-04-03");
         assert_eq!(next.format("%H:%M").to_string(), "17:30");
+    }
+
+    #[test]
+    fn next_run_at_uses_nearest_future_batch_time_before_noon() {
+        let config = AppConfig {
+            batch_times: vec!["12:00".to_string(), "17:30".to_string()],
+            ..AppConfig::default()
+        };
+
+        let now = Local
+            .with_ymd_and_hms(2026, 4, 2, 11, 0, 0)
+            .single()
+            .expect("time should resolve");
+
+        let next = next_run_at(now, &config).expect("next run should be calculated");
+
+        assert_eq!(next.date_naive().to_string(), "2026-04-02");
+        assert_eq!(next.format("%H:%M").to_string(), "12:00");
+    }
+
+    #[test]
+    fn next_run_at_uses_evening_batch_time_after_noon() {
+        let config = AppConfig {
+            batch_times: vec!["12:00".to_string(), "17:30".to_string()],
+            ..AppConfig::default()
+        };
+
+        let now = Local
+            .with_ymd_and_hms(2026, 4, 2, 13, 0, 0)
+            .single()
+            .expect("time should resolve");
+
+        let next = next_run_at(now, &config).expect("next run should be calculated");
+
+        assert_eq!(next.date_naive().to_string(), "2026-04-02");
+        assert_eq!(next.format("%H:%M").to_string(), "17:30");
+    }
+
+    #[test]
+    fn next_run_at_rolls_to_next_day_noon_after_all_batch_times() {
+        let config = AppConfig {
+            batch_times: vec!["12:00".to_string(), "17:30".to_string()],
+            ..AppConfig::default()
+        };
+
+        let now = Local
+            .with_ymd_and_hms(2026, 4, 2, 18, 0, 0)
+            .single()
+            .expect("time should resolve");
+
+        let next = next_run_at(now, &config).expect("next run should be calculated");
+
+        assert_eq!(next.date_naive().to_string(), "2026-04-03");
+        assert_eq!(next.format("%H:%M").to_string(), "12:00");
     }
 }

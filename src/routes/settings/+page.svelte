@@ -19,7 +19,7 @@
     max_frames_per_collage: number;
     scheduler_enabled: boolean;
     setup_complete: boolean;
-    batch_time: string;
+    batch_times: string[];
     vlm_engine: string;
     vlm_host: string;
     vlm_max_tokens: number;
@@ -55,7 +55,7 @@
     max_frames_per_collage: 6,
     scheduler_enabled: true,
     setup_complete: false,
-    batch_time: "17:30",
+    batch_times: ["12:00", "17:30"],
     vlm_engine: "copilot",
     vlm_host: "127.0.0.1:8080",
     vlm_max_tokens: 256,
@@ -67,7 +67,7 @@
     user_prompt:
       "このスクリーンショットに写っている業務操作を1〜3文で説明してください。必ず次の観点を含めてください: 使用中のアプリケーション、現在行っている操作または確認行為、表示されているデータ・対象・画面名。画面内に読める固有ラベル、カード名、件数、ボタン名、表題があれば優先して文章に含めてください。操作が明確でない場合は、何を入力したかを推測せず「ダッシュボードを確認している」「一覧を閲覧している」のように記述してください。出力は自然な日本語の文章のみとし、箇条書きや JSON は使わないでください。",
     session_user_prompt:
-      "これは {start_time} から {end_time} の間（{duration_min}分間）の業務画面の流れです。{frame_count} 枚のスクリーンショットを時系列順に並べたコラージュを見て、この間に行っていた業務操作を1〜3文で説明してください。必ず次の観点を含めてください: 使用中のアプリケーション、実行している操作の流れ、表示されているデータや対象、画面内で読み取れる固有ラベルや表題。入力内容や意図は画面から裏付けられる範囲に限定し、単に画面を追っているだけに見える場合は確認・閲覧の流れとして記述してください。出力は自然な日本語の文章のみとし、箇条書きや JSON は使わないでください。",
+      "これは {start_time} から {end_time} の間（{duration_min}分間）の業務画面を{frame_count} 枚のスクリーンショットにまとめたコラージュです。画像は左上から右下へ時系列順に並んでいます。\nこの間の業務操作の流れを2〜5文で説明してください。必ず次の観点を含めてください:\n  使用中のアプリケーション、最初に何をしていたか・途中でどう変化したか・最後の状態、画面内で読み取れる固有ラベル・表題・件数・ボタン名。\n入力内容や意図は画面から裏付けられる範囲に限定し、単に画面を確認しているだけに見える場合は「〇〇を確認・閲覧している」と記述してください。業務と無関係な画面（ブラウザのニュース閲覧等）が含まれる場合はその旨も明記してください。出力は自然な日本語の文章のみとし、箇条書きや JSON は使わないでください。",
     mask_rules: []
   };
 
@@ -106,6 +106,12 @@
 
   function refreshValidation() {
     fieldErrors = currentValidationErrors();
+  }
+
+  function updateBatchTime(index: number, value: string) {
+    const nextBatchTimes = [...config.batch_times];
+    nextBatchTimes[index] = value;
+    config = { ...config, batch_times: nextBatchTimes };
   }
 
   function touchField(field: keyof typeof touched) {
@@ -316,7 +322,7 @@
         <div class="mt-4 space-y-3 text-sm leading-6 text-white/80">
           <p>キャプチャ間隔は 3 秒から 300 秒の範囲で調整できます。</p>
           <p>検出感度を上げるほど、近い画面変化をスキップしやすくなります。</p>
-          <p>夜間バッチを有効にすると、指定時刻に未処理フレームの説明文を自動生成します。</p>
+          <p>自動バッチを有効にすると、指定時刻に未処理フレームの説明文を自動生成します。</p>
           <p>保存先ディレクトリはキャプチャ画像と関連データの出力先です。</p>
         </div>
       </div>
@@ -384,23 +390,37 @@
 
         <label class="flex items-center justify-between rounded-2xl border border-ink-100 px-4 py-4">
           <div>
-            <p class="text-sm font-medium text-ink-700">夜間バッチを有効化</p>
+            <p class="text-sm font-medium text-ink-700">自動バッチを有効化</p>
             <p class="mt-1 text-sm text-ink-500">
-              指定時刻になると、未処理の記録から説明文を自動生成します。
+              指定した時刻になると、未処理の記録から説明文を自動生成します。
             </p>
           </div>
           <input class="h-5 w-5 accent-brass-600" type="checkbox" bind:checked={config.scheduler_enabled} />
         </label>
 
-        <div>
-          <label class="text-sm font-medium text-ink-700" for="batch-time">バッチ開始時刻</label>
-          <input
-            id="batch-time"
-            class="mt-3 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300 disabled:cursor-not-allowed disabled:opacity-50"
-            type="time"
-            bind:value={config.batch_time}
-            disabled={!config.scheduler_enabled}
-          />
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label class="text-sm font-medium text-ink-700" for="batch-time-lunch">昼休み前</label>
+            <input
+              id="batch-time-lunch"
+              class="mt-3 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300 disabled:cursor-not-allowed disabled:opacity-50"
+              type="time"
+              value={config.batch_times[0] ?? "12:00"}
+              oninput={(event) => updateBatchTime(0, (event.currentTarget as HTMLInputElement).value)}
+              disabled={!config.scheduler_enabled}
+            />
+          </div>
+          <div>
+            <label class="text-sm font-medium text-ink-700" for="batch-time-evening">定時前</label>
+            <input
+              id="batch-time-evening"
+              class="mt-3 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300 disabled:cursor-not-allowed disabled:opacity-50"
+              type="time"
+              value={config.batch_times[1] ?? "17:30"}
+              oninput={(event) => updateBatchTime(1, (event.currentTarget as HTMLInputElement).value)}
+              disabled={!config.scheduler_enabled}
+            />
+          </div>
         </div>
       </div>
     </article>

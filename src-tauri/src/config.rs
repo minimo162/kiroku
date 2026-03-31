@@ -80,8 +80,6 @@ pub fn load_config(path: &Path, default_data_dir: &Path) -> Result<AppConfig, Co
 
 fn migrate_default_prompts(config: &mut AppConfig) {
     const LEGACY_CAPTURE_INTERVAL_SECS: u64 = 30;
-    const LEGACY_BATCH_TIME: &str = "22:00";
-    const PREVIOUS_BATCH_TIME: &str = "18:00";
     const LEGACY_SYSTEM_PROMPT: &str = concat!(
         "あなたは経理部門向けの業務記録アシスタントです。画面上で確認できる事実を優先し、",
         "日本語で簡潔に記述してください。SAP GUI、Excel、Outlook、Teams などの画面を対象とし、",
@@ -98,16 +96,26 @@ fn migrate_default_prompts(config: &mut AppConfig) {
         "業務画面の流れです。{frame_count} 枚のスクリーンショットを",
         "時系列順に並べたコラージュを見て、この間に行っていた業務操作を",
         "1〜3文で説明してください。必ず次の観点を含めてください: ",
+        "使用中のアプリケーション、実行している操作の流れ、表示されているデータや対象。",
+        "出力は自然な日本語の文章のみとし、箇条書きや JSON は使わないでください。"
+    );
+    const PREVIOUS_SESSION_USER_PROMPT: &str = concat!(
+        "これは {start_time} から {end_time} の間（{duration_min}分間）の",
+        "業務画面の流れです。{frame_count} 枚のスクリーンショットを",
+        "時系列順に並べたコラージュを見て、この間に行っていた業務操作を",
+        "1〜3文で説明してください。必ず次の観点を含めてください: ",
         "使用中のアプリケーション、実行している操作の流れ、",
-        "表示されているデータや対象。",
+        "表示されているデータや対象、画面内で読み取れる固有ラベルや表題。",
+        "入力内容や意図は画面から裏付けられる範囲に限定し、",
+        "単に画面を追っているだけに見える場合は確認・閲覧の流れとして記述してください。",
         "出力は自然な日本語の文章のみとし、箇条書きや JSON は使わないでください。"
     );
 
     if config.capture_interval_secs == LEGACY_CAPTURE_INTERVAL_SECS {
         config.capture_interval_secs = AppConfig::default().capture_interval_secs;
     }
-    if config.batch_time == LEGACY_BATCH_TIME || config.batch_time == PREVIOUS_BATCH_TIME {
-        config.batch_time = AppConfig::default().batch_time;
+    if config.batch_times.is_empty() {
+        config.batch_times = AppConfig::default().batch_times;
     }
     if config.system_prompt.trim().is_empty() || config.system_prompt == LEGACY_SYSTEM_PROMPT {
         config.system_prompt = default_system_prompt();
@@ -117,6 +125,7 @@ fn migrate_default_prompts(config: &mut AppConfig) {
     }
     if config.session_user_prompt.trim().is_empty()
         || config.session_user_prompt == LEGACY_SESSION_USER_PROMPT
+        || config.session_user_prompt == PREVIOUS_SESSION_USER_PROMPT
     {
         config.session_user_prompt = default_session_user_prompt();
     }
@@ -300,7 +309,6 @@ mod tests {
   "auto_delete_images": true,
   "scheduler_enabled": true,
   "setup_complete": false,
-  "batch_time": "22:00",
   "vlm_host": "127.0.0.1:8080",
   "vlm_max_tokens": 256,
   "data_dir": ""
@@ -312,7 +320,10 @@ mod tests {
 
         assert_eq!(config.data_dir, data_dir.to_string_lossy());
         assert_eq!(config.capture_interval_secs, 10);
-        assert_eq!(config.batch_time, "17:30");
+        assert_eq!(
+            config.batch_times,
+            vec!["12:00".to_string(), "17:30".to_string()]
+        );
 
         fs::remove_dir_all(&data_dir).expect("temporary config directory should be removed");
     }
