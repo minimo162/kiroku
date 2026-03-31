@@ -12,9 +12,9 @@ use crate::{
 };
 
 const MODEL_REPO_BASE: &str =
-    "https://huggingface.co/Qwen/Qwen2.5-VL-0.5B-Instruct-GGUF/resolve/main";
-const DEFAULT_MODEL_FILE_NAME: &str = "Qwen2.5-VL-0.5B-Instruct-Q4_K_M.gguf";
-const DEFAULT_MMPROJ_FILE_NAME: &str = "mmproj-Qwen2.5-VL-0.5B-Instruct-f16.gguf";
+    "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main";
+const DEFAULT_MODEL_FILE_NAME: &str = "Qwen3.5-0.8B-UD-Q6_K_XL.gguf";
+const DEFAULT_MMPROJ_FILE_NAME: &str = "mmproj-BF16.gguf";
 const MODEL_PROGRESS_EVENT: &str = "model-download-progress";
 const ENV_MODEL_URL: &str = "KIROKU_MODEL_URL";
 const ENV_MMPROJ_URL: &str = "KIROKU_MMPROJ_URL";
@@ -89,9 +89,7 @@ pub async fn download_model(
 ) -> Result<ModelDownloadResult, String> {
     let models_dir = state.app_paths.data_dir.join("models");
     fs::create_dir_all(&models_dir).map_err(|error| error.to_string())?;
-    let client = reqwest::Client::builder()
-        .build()
-        .map_err(|error| error.to_string())?;
+    let client = build_download_client().map_err(|error| error.to_string())?;
 
     for artifact in MODEL_ARTIFACTS {
         let destination = models_dir.join(artifact.file_name);
@@ -249,6 +247,10 @@ fn model_url_for(spec: &ArtifactSpec) -> String {
     env::var(spec.env_key).unwrap_or_else(|_| format!("{MODEL_REPO_BASE}/{}", spec.file_name))
 }
 
+fn build_download_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder().use_native_tls().build()
+}
+
 fn content_length(headers: &HeaderMap) -> Option<u64> {
     headers
         .get(CONTENT_LENGTH)
@@ -334,7 +336,10 @@ fn emit_progress(app: &AppHandle, progress: ModelDownloadProgress) {
 mod tests {
     use reqwest::header::HeaderValue;
 
-    use super::{extract_hash, format_remaining, percentage};
+    use super::{
+        build_download_client, extract_hash, format_remaining, percentage,
+        DEFAULT_MMPROJ_FILE_NAME, DEFAULT_MODEL_FILE_NAME, MODEL_REPO_BASE,
+    };
 
     #[test]
     fn extract_hash_accepts_sha256_etag() {
@@ -358,5 +363,20 @@ mod tests {
     fn format_remaining_uses_seconds_or_minutes() {
         assert_eq!(format_remaining(50, Some(100), 10.0), "10秒");
         assert_eq!(format_remaining(100, Some(1000), 10.0), "1分");
+    }
+
+    #[test]
+    fn default_model_artifacts_point_to_qwen35_unsloth_repo() {
+        assert_eq!(
+            MODEL_REPO_BASE,
+            "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main"
+        );
+        assert_eq!(DEFAULT_MODEL_FILE_NAME, "Qwen3.5-0.8B-UD-Q6_K_XL.gguf");
+        assert_eq!(DEFAULT_MMPROJ_FILE_NAME, "mmproj-BF16.gguf");
+    }
+
+    #[test]
+    fn download_client_builds_with_native_tls_enabled() {
+        build_download_client().expect("download client should build");
     }
 }
