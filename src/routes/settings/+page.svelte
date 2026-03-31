@@ -32,6 +32,13 @@
     mask_rules: MaskRule[];
   };
 
+  type CopilotConnectionStatus = {
+    connected: boolean;
+    login_required: boolean;
+    url?: string | null;
+    error?: string | null;
+  };
+
   const createMaskRule = (): MaskRule => ({
     pattern: "",
     replacement: "[MASKED]",
@@ -69,6 +76,12 @@
   let saving = $state(false);
   let testing = $state(false);
   let selectingFolder = $state(false);
+  let copilotStatus = $state<"checking" | "connected" | "login_required" | "disconnected">(
+    "disconnected"
+  );
+  let copilotStatusMessage = $state("接続テストを実行すると Copilot の状態を確認できます。");
+  let copilotStatusUrl = $state<string | null>(null);
+  let showCopilotAdvanced = $state(false);
   let maskPreviewInput = $state("株式会社A の売上 120,000 円を Excel で確認");
   let tauriAvailable = $state(false);
   let fieldErrors = $state({
@@ -138,6 +151,9 @@
     saving = true;
     try {
       config = await invoke<AppConfig>("save_config_command", { config });
+      copilotStatus = "disconnected";
+      copilotStatusMessage = "設定を保存しました。必要に応じて接続テストで Copilot の状態を確認してください。";
+      copilotStatusUrl = null;
       addToast("success", "設定を保存しました。記録中の場合は新しい設定で再開します。");
     } catch (error) {
       addToast("error", error instanceof Error ? error.message : String(error));
@@ -157,6 +173,50 @@
       }
     } finally {
       selectingFolder = false;
+    }
+  }
+
+  function applyCopilotStatus(status: CopilotConnectionStatus) {
+    copilotStatusUrl = status.url ?? null;
+
+    if (status.login_required) {
+      copilotStatus = "login_required";
+      copilotStatusMessage =
+        status.error ?? "Copilot にログインしてください。Edge の画面を確認してください。";
+      return;
+    }
+
+    if (status.connected) {
+      copilotStatus = "connected";
+      copilotStatusMessage = "Copilot へ接続できています。";
+      return;
+    }
+
+    copilotStatus = "disconnected";
+    copilotStatusMessage = status.error ?? "Edge または Copilot に接続できていません。";
+  }
+
+  async function testCopilotConnection() {
+    if (!isTauri()) return;
+
+    testing = true;
+    copilotStatus = "checking";
+    copilotStatusMessage = "Copilot への接続を確認しています...";
+    try {
+      const status = await invoke<CopilotConnectionStatus>("check_copilot_connection");
+      applyCopilotStatus(status);
+
+      if (status.connected) {
+        addToast("success", "Copilot への接続を確認しました。");
+      } else if (!status.login_required) {
+        addToast("error", copilotStatusMessage);
+      }
+    } catch (error) {
+      copilotStatus = "disconnected";
+      copilotStatusMessage = error instanceof Error ? error.message : String(error);
+      addToast("error", copilotStatusMessage);
+    } finally {
+      testing = false;
     }
   }
   function addMaskRule() {
@@ -360,22 +420,46 @@
 
         <div class="space-y-4">
           <div class="rounded-2xl border border-ink-100 bg-ink-50/70 px-4 py-4 text-sm leading-6 text-ink-600">
-            <p class="font-semibold text-ink-900">事前準備</p>
-            <p class="mt-2">バッチ実行前に、以下の手順で Edge を起動してください。</p>
-            <ol class="mt-2 list-decimal space-y-1 pl-5">
-              <li>
-                Edge のショートカットに
-                <code class="rounded bg-ink-200 px-1 text-xs">--remote-debugging-port=9222</code>
-                を追加して起動
-              </li>
-              <li>
-                Edge で
-                <code class="rounded bg-ink-200 px-1 text-xs">
-                  https://m365.cloud.microsoft/chat/
-                </code>
-                を開いて M365 にログイン
-              </li>
-            </ol>
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p class="font-semibold text-ink-900">Copilot 接続ステータス</p>
+                <p class="mt-1 text-sm text-ink-500">{copilotStatusMessage}</p>
+              </div>
+              <span
+                class={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] ${
+                  copilotStatus === "connected"
+                    ? "bg-emerald-100 text-emerald-700"
+                    : copilotStatus === "login_required"
+                      ? "bg-amber-100 text-amber-700"
+                      : copilotStatus === "checking"
+                        ? "bg-slate-200 text-slate-700"
+                        : "bg-cinnabar-100 text-cinnabar-700"
+                }`}
+              >
+                {copilotStatus === "connected"
+                  ? "接続済み"
+                  : copilotStatus === "login_required"
+                    ? "ログイン必要"
+                    : copilotStatus === "checking"
+                      ? "確認中"
+                      : "未接続"}
+              </span>
+            </div>
+
+            {#if copilotStatusUrl}
+              <p class="mt-3 text-xs text-ink-400 break-all">{copilotStatusUrl}</p>
+            {/if}
+
+            <div class="mt-4 flex flex-wrap gap-3">
+              <button
+                class="rounded-full border border-ink-200 bg-white px-4 py-2 text-sm font-semibold text-ink-700 transition hover:border-brass-300 hover:text-brass-700 disabled:cursor-not-allowed disabled:opacity-60"
+                type="button"
+                onclick={testCopilotConnection}
+                disabled={!tauriAvailable || testing}
+              >
+                {testing ? "接続確認中..." : "接続テスト"}
+              </button>
+            </div>
           </div>
 
           <div>
@@ -396,20 +480,36 @@
             {/if}
           </div>
 
-          <div>
-            <label class="text-sm font-medium text-ink-700" for="edge-cdp-port"
-              >Edge CDP ポート</label
-            >
-            <input
-              id="edge-cdp-port"
-              class="mt-3 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300"
-              type="number"
-              min="1024"
-              max="65535"
-              bind:value={config.edge_cdp_port}
-            />
-            <p class="mt-2 text-xs text-ink-400">通常は変更不要です（既定: 9222）</p>
-          </div>
+          <details class="rounded-2xl border border-ink-100 bg-white px-4 py-4" bind:open={showCopilotAdvanced}>
+            <summary class="cursor-pointer text-sm font-semibold text-ink-900">
+              詳細設定と手動セットアップ手順
+            </summary>
+            <div class="mt-4 space-y-4">
+              <div class="rounded-2xl border border-ink-100 bg-ink-50/70 px-4 py-4 text-sm leading-6 text-ink-600">
+                <p class="font-semibold text-ink-900">手動セットアップが必要な場合</p>
+                <ol class="mt-2 list-decimal space-y-1 pl-5">
+                  <li>Edge を起動し、Microsoft 365 にログイン</li>
+                  <li>Copilot 画面が開かれない場合は接続テストを再実行</li>
+                  <li>CDP ポートを変更している場合のみ下の詳細設定を調整</li>
+                </ol>
+              </div>
+
+              <div>
+                <label class="text-sm font-medium text-ink-700" for="edge-cdp-port"
+                  >Edge CDP ポート</label
+                >
+                <input
+                  id="edge-cdp-port"
+                  class="mt-3 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300"
+                  type="number"
+                  min="1024"
+                  max="65535"
+                  bind:value={config.edge_cdp_port}
+                />
+                <p class="mt-2 text-xs text-ink-400">通常は変更不要です（既定: 9222）</p>
+              </div>
+            </div>
+          </details>
 
           <div class="space-y-4 rounded-2xl border border-ink-100 bg-white px-4 py-4">
             <div class="flex items-center justify-between gap-4">

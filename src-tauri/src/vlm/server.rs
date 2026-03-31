@@ -7,6 +7,7 @@ use std::{
 };
 
 use reqwest::{Client, Url};
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use thiserror::Error;
 use tokio::time::sleep;
@@ -46,6 +47,25 @@ pub enum VlmError {
     Join(#[from] tokio::task::JoinError),
     #[error("{0}")]
     InvalidResponse(String),
+    #[error("{0}")]
+    LoginRequired(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CopilotConnectionStatus {
+    pub connected: bool,
+    pub login_required: bool,
+    pub url: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CopilotConnectionStatusResponse {
+    connected: bool,
+    login_required: bool,
+    url: Option<String>,
+    error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -218,6 +238,63 @@ pub async fn check_vlm_status(
     let snapshot = refresh_vlm_state(state.inner()).await;
     let _ = app.emit("vlm-status", &snapshot);
     Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn check_copilot_connection(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<CopilotConnectionStatus, String> {
+    let data_dir = state.app_paths.data_dir.clone();
+    let server_url = {
+        let mut server = state.copilot_server.lock().await;
+        if server.health_check().await.is_err() {
+            server
+                .start(&data_dir)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        server.server_url()
+    };
+
+    let status = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|error| error.to_string())?
+        .get(format!("{server_url}/status"))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .json::<CopilotConnectionStatusResponse>()
+        .await
+        .map_err(|error| error.to_string())?;
+    let status = CopilotConnectionStatus {
+        connected: status.connected,
+        login_required: status.login_required,
+        url: status.url,
+        error: status.error,
+    };
+
+    let last_error = if status.login_required {
+        Some(status.error.clone().unwrap_or_else(|| {
+            "Copilot にログインしてください。Edge の画面を確認してください。".to_string()
+        }))
+    } else {
+        status.error.clone()
+    };
+    let snapshot = update_vlm_state(state.inner(), Some(true), None, last_error.clone()).await;
+    let _ = app.emit("vlm-status", &snapshot);
+
+    if status.login_required {
+        let _ = app.emit(
+            "copilot-login-required",
+            &last_error.unwrap_or_else(|| {
+                "Copilot にログインしてください。Edge の画面を確認してください。".to_string()
+            }),
+        );
+    }
+
+    Ok(status)
 }
 
 #[tauri::command]

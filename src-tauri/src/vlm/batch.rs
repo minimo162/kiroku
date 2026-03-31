@@ -388,6 +388,28 @@ async fn vlm_batch_loop(
                 }
             }
             Err(error) => {
+                if let VlmError::LoginRequired(message) = &error {
+                    pause_for_copilot_login(&app, &state, message).await;
+                    if let Err(wait_error) = wait_if_paused(&mut cancel_rx, &mut pause_rx).await {
+                        finish_batch(
+                            &app,
+                            &state,
+                            BatchResult {
+                                total,
+                                completed,
+                                failed,
+                                cancelled: true,
+                                error: None,
+                            },
+                            Some(wait_error.to_string()),
+                            &options,
+                        )
+                        .await;
+                        return;
+                    }
+                    continue;
+                }
+
                 if matches!(&error, VlmError::Http(_)) {
                     let health = if options.vlm_engine == "copilot" {
                         let server = state.copilot_server.lock().await;
@@ -664,6 +686,28 @@ async fn run_session_batch_loop(
                 completed += 1;
             }
             Err(error) => {
+                if let VlmError::LoginRequired(message) = &error {
+                    pause_for_copilot_login(&app, &state, message).await;
+                    if let Err(wait_error) = wait_if_paused(&mut cancel_rx, &mut pause_rx).await {
+                        finish_batch(
+                            &app,
+                            &state,
+                            BatchResult {
+                                total,
+                                completed,
+                                failed,
+                                cancelled: true,
+                                error: None,
+                            },
+                            Some(wait_error.to_string()),
+                            &options,
+                        )
+                        .await;
+                        return;
+                    }
+                    continue;
+                }
+
                 eprintln!("session {} description failed: {}", session.id, error);
                 failed += 1;
             }
@@ -829,6 +873,14 @@ async fn clear_batch_controls(state: &AppState) {
         let mut batch_task = state.vlm_batch_task.lock().await;
         *batch_task = None;
     }
+}
+
+async fn pause_for_copilot_login(app: &AppHandle, state: &AppState, message: &str) {
+    if let Some(sender) = state.vlm_batch_pause_signal.lock().await.clone() {
+        let _ = sender.send(true);
+    }
+
+    let _ = app.emit("copilot-login-required", message.to_string());
 }
 
 async fn wait_if_paused(

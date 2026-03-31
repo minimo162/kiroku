@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
+import { spawn } from "node:child_process";
 import {
   chromium
 } from "playwright";
@@ -45,19 +46,65 @@ var RESPONSE_SELECTORS = [
 ];
 var RESPONSE_URL_PATTERN = /substrate\.office\.com|copilot\.microsoft\.com|m365\.cloud\.microsoft|api\.bing\.microsoft\.com/i;
 var RESPONSE_TIMEOUT_MS = 12e4;
+var CDP_PROBE_TIMEOUT_MS = 2e3;
+var EDGE_LAUNCH_TIMEOUT_MS = 15e3;
+var EDGE_LAUNCH_POLL_INTERVAL_MS = 500;
+var CopilotLoginRequiredError = class extends Error {
+};
 var CopilotSession = class {
   browser = null;
   page = null;
   lock = false;
   async connect(cdpPort) {
+    await ensureEdgeConnected(cdpPort);
     if (!this.browser || !this.browser.isConnected()) {
-      this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-      this.browser.on("disconnected", () => {
+      try {
+        this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+        this.browser.on("disconnected", () => {
+          this.browser = null;
+          this.page = null;
+        });
+      } catch (error) {
         this.browser = null;
         this.page = null;
-      });
+        throw error;
+      }
     }
     this.page = await this.findOrCreateCopilotPage(this.browser);
+  }
+  async inspectStatus() {
+    try {
+      await this.connect(globalOptions.cdpPort);
+      const page = this.page;
+      if (!page) {
+        return {
+          connected: false,
+          loginRequired: false,
+          error: "Copilot page is not available"
+        };
+      }
+      await page.bringToFront().catch(() => {
+      });
+      if (!isCopilotUrl(page.url()) && !isLoginUrl(page.url())) {
+        await page.goto(COPILOT_URL, { waitUntil: "domcontentloaded" });
+      }
+      const loginRequired = isLoginUrl(page.url());
+      if (loginRequired) {
+        await page.bringToFront().catch(() => {
+        });
+      }
+      return {
+        connected: !loginRequired,
+        loginRequired,
+        url: page.url()
+      };
+    } catch (error) {
+      return {
+        connected: false,
+        loginRequired: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
   }
   async describe(systemPrompt, userPrompt, imageB64) {
     if (this.lock) {
@@ -72,9 +119,10 @@ var CopilotSession = class {
         throw new Error("Copilot page is not available");
       }
       await page.bringToFront();
-      if (!page.url().includes("m365.cloud.microsoft/chat")) {
+      if (!isCopilotUrl(page.url())) {
         await page.goto(COPILOT_URL, { waitUntil: "domcontentloaded" });
       }
+      await checkLoginState(page);
       await this.startNewChat(page);
       if (imageB64) {
         uploadedImagePath = await uploadImage(page, imageB64);
@@ -127,11 +175,26 @@ var CopilotSession = class {
 };
 function findCopilotPage(context) {
   for (const page of context.pages()) {
-    if (page.url().includes("m365.cloud.microsoft/chat")) {
+    if (isCopilotUrl(page.url()) || isLoginUrl(page.url())) {
       return page;
     }
   }
   return null;
+}
+function isCopilotUrl(url) {
+  return url.includes("m365.cloud.microsoft/chat");
+}
+function isLoginUrl(url) {
+  return url.includes("login.microsoftonline.com") || url.includes("login.live.com") || url.includes("microsoft.com/fwlink");
+}
+async function checkLoginState(page) {
+  if (isLoginUrl(page.url())) {
+    await page.bringToFront().catch(() => {
+    });
+    throw new CopilotLoginRequiredError(
+      "Copilot \u306B\u30ED\u30B0\u30A4\u30F3\u3057\u3066\u304F\u3060\u3055\u3044\u3002Edge \u306E\u753B\u9762\u3092\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044\u3002"
+    );
+  }
 }
 async function pastePrompt(page, systemPrompt, userPrompt) {
   const fullPrompt = systemPrompt ? `${systemPrompt}
@@ -299,6 +362,11 @@ function createServer2(session) {
       if (req.method === "GET" && req.url === "/health") {
         return writeJson(res, 200, { status: "ok" });
       }
+      const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (req.method === "GET" && requestUrl.pathname === "/status") {
+        const status = await session.inspectStatus();
+        return writeJson(res, 200, status);
+      }
       if (req.method === "POST" && req.url === "/v1/chat/completions") {
         const payload = await readJsonBody(req);
         const prompt = parseOpenAiRequest(payload);
@@ -315,9 +383,79 @@ function createServer2(session) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[copilot] request failed", error);
+      if (error instanceof CopilotLoginRequiredError) {
+        return writeJson(res, 401, { error: "login_required", message });
+      }
       return writeJson(res, 500, { error: message });
     }
   });
+}
+async function ensureEdgeConnected(cdpPort) {
+  const existing = await probeCdpVersion(cdpPort);
+  if (existing) {
+    return;
+  }
+  const edgeExecutable = findEdgeExecutable();
+  if (!edgeExecutable) {
+    throw new Error("Microsoft Edge \u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002Edge \u3092\u30A4\u30F3\u30B9\u30C8\u30FC\u30EB\u3057\u3066\u304F\u3060\u3055\u3044\u3002");
+  }
+  launchEdgeForCdp(edgeExecutable, cdpPort);
+  const deadline = Date.now() + EDGE_LAUNCH_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (await probeCdpVersion(cdpPort)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, EDGE_LAUNCH_POLL_INTERVAL_MS));
+  }
+  throw new Error(
+    "Edge \u306E\u30C7\u30D0\u30C3\u30B0\u63A5\u7D9A\u3092\u958B\u59CB\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F\u3002\u65E2\u5B58\u306E Edge \u3092\u9589\u3058\u3066\u304B\u3089\u518D\u8A66\u884C\u3057\u3066\u304F\u3060\u3055\u3044\u3002"
+  );
+}
+async function probeCdpVersion(cdpPort) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${cdpPort}/json/version`, {
+      signal: AbortSignal.timeout(CDP_PROBE_TIMEOUT_MS)
+    });
+    if (!response.ok) {
+      return null;
+    }
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+function findEdgeExecutable() {
+  if (process.platform !== "win32") {
+    return null;
+  }
+  const candidates = [
+    process.env["PROGRAMFILES(X86)"],
+    process.env.PROGRAMFILES
+  ].filter(Boolean).map((root) => path.join(root, "Microsoft", "Edge", "Application", "msedge.exe"));
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+function launchEdgeForCdp(edgeExecutable, cdpPort) {
+  const child = spawn(
+    edgeExecutable,
+    [
+      `--remote-debugging-port=${cdpPort}`,
+      "--remote-allow-origins=*",
+      "--no-first-run",
+      "--no-default-browser-check",
+      COPILOT_URL
+    ],
+    {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true
+    }
+  );
+  child.unref();
 }
 async function readJsonBody(req) {
   const chunks = [];

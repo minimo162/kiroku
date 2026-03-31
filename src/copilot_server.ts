@@ -3,6 +3,7 @@ import * as http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
+import { spawn } from "node:child_process";
 
 import {
   chromium,
@@ -56,6 +57,9 @@ const RESPONSE_SELECTORS = [
 const RESPONSE_URL_PATTERN =
   /substrate\.office\.com|copilot\.microsoft\.com|m365\.cloud\.microsoft|api\.bing\.microsoft\.com/i;
 const RESPONSE_TIMEOUT_MS = 120_000;
+const CDP_PROBE_TIMEOUT_MS = 2_000;
+const EDGE_LAUNCH_TIMEOUT_MS = 15_000;
+const EDGE_LAUNCH_POLL_INTERVAL_MS = 500;
 
 type OpenAiRequestMessage = {
   role?: string;
@@ -72,21 +76,75 @@ type ParsedPrompt = {
   imageB64?: string;
 };
 
+type CopilotStatus = {
+  connected: boolean;
+  loginRequired: boolean;
+  url?: string;
+  error?: string;
+};
+
+class CopilotLoginRequiredError extends Error {}
+
 class CopilotSession {
   private browser: Browser | null = null;
   private page: Page | null = null;
   private lock = false;
 
   async connect(cdpPort: number): Promise<void> {
+    await ensureEdgeConnected(cdpPort);
+
     if (!this.browser || !this.browser.isConnected()) {
-      this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-      this.browser.on("disconnected", () => {
+      try {
+        this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+        this.browser.on("disconnected", () => {
+          this.browser = null;
+          this.page = null;
+        });
+      } catch (error) {
         this.browser = null;
         this.page = null;
-      });
+        throw error;
+      }
     }
 
     this.page = await this.findOrCreateCopilotPage(this.browser);
+  }
+
+  async inspectStatus(): Promise<CopilotStatus> {
+    try {
+      await this.connect(globalOptions.cdpPort);
+
+      const page = this.page;
+      if (!page) {
+        return {
+          connected: false,
+          loginRequired: false,
+          error: "Copilot page is not available"
+        };
+      }
+
+      await page.bringToFront().catch(() => {});
+      if (!isCopilotUrl(page.url()) && !isLoginUrl(page.url())) {
+        await page.goto(COPILOT_URL, { waitUntil: "domcontentloaded" });
+      }
+
+      const loginRequired = isLoginUrl(page.url());
+      if (loginRequired) {
+        await page.bringToFront().catch(() => {});
+      }
+
+      return {
+        connected: !loginRequired,
+        loginRequired,
+        url: page.url()
+      };
+    } catch (error) {
+      return {
+        connected: false,
+        loginRequired: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
   }
 
   async describe(systemPrompt: string, userPrompt: string, imageB64?: string): Promise<string> {
@@ -107,9 +165,10 @@ class CopilotSession {
 
       await page.bringToFront();
 
-      if (!page.url().includes("m365.cloud.microsoft/chat")) {
+      if (!isCopilotUrl(page.url())) {
         await page.goto(COPILOT_URL, { waitUntil: "domcontentloaded" });
       }
+      await checkLoginState(page);
 
       await this.startNewChat(page);
 
@@ -168,12 +227,33 @@ class CopilotSession {
 
 function findCopilotPage(context: BrowserContext): Page | null {
   for (const page of context.pages()) {
-    if (page.url().includes("m365.cloud.microsoft/chat")) {
+    if (isCopilotUrl(page.url()) || isLoginUrl(page.url())) {
       return page;
     }
   }
 
   return null;
+}
+
+function isCopilotUrl(url: string): boolean {
+  return url.includes("m365.cloud.microsoft/chat");
+}
+
+function isLoginUrl(url: string): boolean {
+  return (
+    url.includes("login.microsoftonline.com") ||
+    url.includes("login.live.com") ||
+    url.includes("microsoft.com/fwlink")
+  );
+}
+
+async function checkLoginState(page: Page): Promise<void> {
+  if (isLoginUrl(page.url())) {
+    await page.bringToFront().catch(() => {});
+    throw new CopilotLoginRequiredError(
+      "Copilot にログインしてください。Edge の画面を確認してください。"
+    );
+  }
 }
 
 async function pastePrompt(page: Page, systemPrompt: string, userPrompt: string): Promise<void> {
@@ -400,6 +480,12 @@ function createServer(session: CopilotSession): http.Server {
         return writeJson(res, 200, { status: "ok" });
       }
 
+      const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (req.method === "GET" && requestUrl.pathname === "/status") {
+        const status = await session.inspectStatus();
+        return writeJson(res, 200, status);
+      }
+
       if (req.method === "POST" && req.url === "/v1/chat/completions") {
         const payload = (await readJsonBody(req)) as OpenAiRequest;
         const prompt = parseOpenAiRequest(payload);
@@ -418,9 +504,93 @@ function createServer(session: CopilotSession): http.Server {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[copilot] request failed", error);
+      if (error instanceof CopilotLoginRequiredError) {
+        return writeJson(res, 401, { error: "login_required", message });
+      }
       return writeJson(res, 500, { error: message });
     }
   });
+}
+
+async function ensureEdgeConnected(cdpPort: number): Promise<void> {
+  const existing = await probeCdpVersion(cdpPort);
+  if (existing) {
+    return;
+  }
+
+  const edgeExecutable = findEdgeExecutable();
+  if (!edgeExecutable) {
+    throw new Error("Microsoft Edge が見つかりません。Edge をインストールしてください。");
+  }
+
+  launchEdgeForCdp(edgeExecutable, cdpPort);
+
+  const deadline = Date.now() + EDGE_LAUNCH_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (await probeCdpVersion(cdpPort)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, EDGE_LAUNCH_POLL_INTERVAL_MS));
+  }
+
+  throw new Error(
+    "Edge のデバッグ接続を開始できませんでした。既存の Edge を閉じてから再試行してください。"
+  );
+}
+
+async function probeCdpVersion(cdpPort: number): Promise<Record<string, unknown> | null> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${cdpPort}/json/version`, {
+      signal: AbortSignal.timeout(CDP_PROBE_TIMEOUT_MS)
+    });
+    if (!response.ok) {
+      return null;
+    }
+
+    return (await response.json()) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function findEdgeExecutable(): string | null {
+  if (process.platform !== "win32") {
+    return null;
+  }
+
+  const candidates = [
+    process.env["PROGRAMFILES(X86)"],
+    process.env.PROGRAMFILES
+  ]
+    .filter(Boolean)
+    .map((root) => path.join(root as string, "Microsoft", "Edge", "Application", "msedge.exe"));
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function launchEdgeForCdp(edgeExecutable: string, cdpPort: number): void {
+  const child = spawn(
+    edgeExecutable,
+    [
+      `--remote-debugging-port=${cdpPort}`,
+      "--remote-allow-origins=*",
+      "--no-first-run",
+      "--no-default-browser-check",
+      COPILOT_URL
+    ],
+    {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true
+    }
+  );
+  child.unref();
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {

@@ -106,7 +106,18 @@ async fn request_description(
         .await?;
 
     if !response.status().is_success() {
-        return Err(VlmError::UnexpectedStatus(response.status().as_u16()));
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
+            if value["error"].as_str() == Some("login_required") {
+                let message = value["message"]
+                    .as_str()
+                    .unwrap_or("Copilot login required");
+                return Err(VlmError::LoginRequired(message.to_string()));
+            }
+        }
+
+        return Err(VlmError::UnexpectedStatus(status.as_u16()));
     }
 
     let response = response.json::<serde_json::Value>().await?;

@@ -254,6 +254,107 @@
       ]
     },
     {
+      "id": "T18",
+      "title": "Edge 自動起動・CDP 自動接続",
+      "description": "copilot_server.ts に Edge の自動検出・起動ロジックを追加する。ユーザーが手動でデバッグポートを指定して Edge を起動する必要をなくす。",
+      "file": "src/copilot_server.ts",
+      "status": "done",
+      "priority": "P0",
+      "depends_on": [],
+      "details": [
+        "## ensureEdgeConnected() 関数を追加",
+        "  1. http://localhost:<cdp_port>/json/version に fetch を試みる（タイムアウト 2 秒）",
+        "  2. 成功: そのまま connectOverCDP() へ",
+        "  3. 失敗: Edge を自動起動する",
+        "     a. findEdgeExecutable() でパスを検索:",
+        "        - process.env['PROGRAMFILES(X86)'] + '\\\\Microsoft\\\\Edge\\\\Application\\\\msedge.exe'",
+        "        - process.env['PROGRAMFILES'] + '\\\\Microsoft\\\\Edge\\\\Application\\\\msedge.exe'",
+        "        - 上記が存在しない場合は Error('Edge not found') を投げる",
+        "     b. child_process.spawn() で Edge を起動:",
+        "        args: [",
+        "          `--remote-debugging-port=${cdpPort}`,",
+        "          '--remote-allow-origins=*',",
+        "          '--no-first-run',",
+        "          '--no-default-browser-check',",
+        "          'https://m365.cloud.microsoft/chat/'",
+        "        ]",
+        "        detached: true, stdio: 'ignore'",
+        "        unref() して Kiroku 終了時に Edge を道連れにしない",
+        "     c. CDP 起動待機: 500ms 間隔で最大 30 回（15 秒）/json/version をポーリング",
+        "        起動確認できたら connectOverCDP() へ",
+        "        タイムアウトしたら Error('Edge CDP did not become available') を投げる",
+        "",
+        "## CopilotSession.init() で ensureEdgeConnected() を呼ぶ",
+        "  既存の connectOverCDP() 呼び出しを ensureEdgeConnected() に置き換える",
+        "",
+        "## エラーハンドリング",
+        "  - Edge が見つからない場合: わかりやすいメッセージを返す",
+        "  - 既存の通常モード Edge が起動していて CDP が使えない場合:",
+        "    /json/version が 404 等で失敗 → 自動起動を試みて競合したら",
+        "    'Edge を閉じてから再試行してください' エラーを返す"
+      ]
+    },
+    {
+      "id": "T19",
+      "title": "ログイン状態の検出とユーザー誘導",
+      "description": "Copilot ページ遷移後にログインページが表示されている場合を検出し、Edge を前面に出してフロントエンドに通知する。",
+      "file": "src/copilot_server.ts",
+      "status": "done",
+      "priority": "P0",
+      "depends_on": ["T18"],
+      "details": [
+        "## checkLoginState() 関数を追加",
+        "  describe() の冒頭（ページ遷移直後）に呼び出す",
+        "  1. page.url() を確認",
+        "  2. 'login.microsoftonline.com' または 'login.live.com' を含む場合:",
+        "     a. page.bringToFront() で Edge を前面に表示",
+        "     b. HTTP レスポンスで {error: 'login_required', message: '...'} を返す",
+        "  3. 正常: そのまま処理続行",
+        "",
+        "## copilot_server.rs 側の対応",
+        "  describe() の HTTP レスポンスで error: 'login_required' を受け取った場合:",
+        "  - VlmError::LoginRequired として返す（既存の VlmError に variant を追加）",
+        "  - batch.rs 側でこのエラーをキャッチし Tauri の app.emit() で",
+        "    'copilot-login-required' イベントをフロントエンドに送信",
+        "",
+        "## フロントエンド側の対応 (src/routes/+layout.svelte または App.svelte)",
+        "  'copilot-login-required' イベントを listen して:",
+        "  - addToast('Copilot にログインしてください。Edge の画面を確認してください。', 'warning')",
+        "  - バッチを一時停止（pause_vlm_batch コマンドを invoke）"
+      ]
+    },
+    {
+      "id": "T20",
+      "title": "設定画面の Copilot セクションを簡素化・接続ステータス追加",
+      "description": "Edge の手動セットアップ手順を隠し、接続ステータスバッジと接続テストボタンに置き換える。edge_cdp_port を詳細設定に格下げする。",
+      "file": "src/routes/settings/+page.svelte",
+      "status": "done",
+      "priority": "P1",
+      "depends_on": ["T18", "T19"],
+      "details": [
+        "## Tauri コマンドを追加 (vlm/server.rs)",
+        "  #[tauri::command] check_copilot_connection(state) -> Result<CopilotStatus, String>",
+        "  CopilotStatus { connected: bool, login_required: bool, error: Option<String> }",
+        "  - CopilotServer.server_url() に /health を叩いて確認",
+        "  - あるいは copilot_server.ts 側に GET /status エンドポイントを追加:",
+        "    { connected: bool, url: string, loginRequired: bool }",
+        "",
+        "## settings/+page.svelte の変更",
+        "  1. copilot エンジン選択時のセクション冒頭に接続ステータスを表示:",
+        "     let copilotStatus = $state<'unknown'|'connected'|'login_required'|'disconnected'>('unknown')",
+        "     - バッジ表示: 接続済み ✓（緑） / ログイン必要（黄） / 未接続（赤） / 確認中（グレー）",
+        "     - [接続テスト] ボタン: check_copilot_connection を invoke して状態を更新",
+        "       ボタン押下時に Edge を自動起動 + Copilot ページを開く（T18 の副作用として）",
+        "",
+        "  2. edge_cdp_port フィールドを詳細設定として折りたたむ:",
+        "     <details> タグまたは show_advanced フラグで制御",
+        "     '詳細設定を表示' リンクで展開",
+        "",
+        "  3. 手動セットアップ手順（README 的テキスト）を削除または詳細設定内に移動",
+        "     T18 で自動化されるため、通常は見せる必要がない"
+      ]
+    },
+    {
       "id": "T17",
       "title": "動作確認・手動テスト",
       "description": "Session Collage 機能を実際の M365 Copilot 環境で動作確認する。",
@@ -277,7 +378,9 @@
     }
   ],
   "implementation_order": [
-    "T12", "T13", "T14", "T15", "T16", "T17"
+    "T12", "T13", "T14", "T15", "T16",
+    "T18", "T19", "T20",
+    "T17"
   ],
   "notes": {
     "key_design_decisions": [
@@ -287,6 +390,12 @@
       "コラージュは image クレート（既存依存）で生成。imageproc は時刻ラベルに使うが省略可",
       "セッションの「まだ進行中」判定: 最後のキャプチャが session_gap_secs 以内なら処理しない",
       "describe_screenshot() は変更不要: collage_path を image_path として渡すだけ"
+    ],
+    "automation_constraints": [
+      "M365 への自動ログインは不可（セキュリティ上、認証情報を扱わない）",
+      "Edge のデバッグ起動と通常起動は同時に共存できない（同じプロセスグループ）",
+      "T18 の Edge 自動起動は Windows 専用（msedge.exe パス決め打ち）",
+      "CDP ポートが競合している場合（他アプリ等）はユーザーに通知して手動対応を求める"
     ],
     "open_questions": [
       "imageproc クレートを追加するか（時刻ラベル描画用）、省略して Cargo.toml を増やさないか",

@@ -8,9 +8,7 @@ use tauri_plugin_dialog::DialogExt;
 use thiserror::Error;
 
 use crate::{
-    models::{
-        default_session_user_prompt, default_system_prompt, default_user_prompt, AppConfig,
-    },
+    models::{default_session_user_prompt, default_system_prompt, default_user_prompt, AppConfig},
     recorder::{start_recording_inner, stop_recording_inner},
     state::AppState,
     vlm::{

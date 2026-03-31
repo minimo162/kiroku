@@ -32,7 +32,7 @@ use scheduler::spawn_scheduler;
 use state::AppState;
 use tray::{handle_close_requested, setup_tray};
 use vlm::batch::{cancel_vlm_batch, pause_vlm_batch, resume_vlm_batch, run_vlm_batch};
-use vlm::server::{check_vlm_status, start_vlm_server, stop_vlm_server};
+use vlm::server::{check_copilot_connection, check_vlm_status, start_vlm_server, stop_vlm_server};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -107,6 +107,7 @@ pub fn run() {
             start_recording,
             stop_recording,
             check_vlm_status,
+            check_copilot_connection,
             start_vlm_server,
             stop_vlm_server,
             run_vlm_batch,

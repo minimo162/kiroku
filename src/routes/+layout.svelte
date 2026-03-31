@@ -3,8 +3,10 @@
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import { page } from "$app/stores";
   import type { Snippet } from "svelte";
+  import { addToast } from "$lib/toast.svelte";
   import ToastContainer from "$lib/components/ToastContainer.svelte";
 
   let { children }: { children: Snippet } = $props();
@@ -36,18 +38,42 @@
       return;
     }
 
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+
     void (async () => {
       try {
         const status = await invoke<SetupStatus>("get_setup_status");
-        if (!status.setup_complete && !isSetupRoute()) {
+        if (!disposed && !status.setup_complete && !isSetupRoute()) {
           await goto("/setup");
-        } else if (status.setup_complete && isSetupRoute()) {
+        } else if (!disposed && status.setup_complete && isSetupRoute()) {
           await goto("/dashboard");
         }
       } finally {
-        checkingSetup = false;
+        if (!disposed) {
+          checkingSetup = false;
+        }
       }
     })();
+
+    void (async () => {
+      const loginRequiredUnlisten = await listen<string>("copilot-login-required", async (event) => {
+        if (disposed) {
+          return;
+        }
+
+        addToast("info", event.payload || "Copilot にログインしてください。Edge の画面を確認してください。");
+        await invoke("pause_vlm_batch").catch(() => false);
+      });
+      unlisteners.push(loginRequiredUnlisten);
+    })();
+
+    return () => {
+      disposed = true;
+      for (const unlisten of unlisteners) {
+        unlisten();
+      }
+    };
   });
 </script>
 
