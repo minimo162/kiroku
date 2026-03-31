@@ -366,7 +366,7 @@ Kiroku が出力した CSV ファイル（UTF-8 BOM付き）
 |業務PCへのソフトウェアインストールに制限がある|展開できない         |perUserインストール（管理者権限不要）で対応済み / IT部門との事前調整       |
 |Copilot Excelのトークン制限    |大量データの分析に制約    |日次CSV（1日分ずつ）で投入 / 要約済みデータに前処理                       |
 |バックグラウンド動作がPC性能に影響      |業務に支障          |スクショ取得・差分検出は軽量（<50ms）/ VLM推論はバッチのみ                  |
-|Tauri v2 の WiX テンプレート制約    |perUser MSI ビルド失敗|**ICE38 修正済み・ビルドキャッシュ問題調査中（タスク33）**。ICE38 修正後も同一エラー（同一行番号）が再現 → Tauri が `target/release/wix/x64/main.wxs` をキャッシュし、ソーステンプレート (`src-tauri/wix/main.wxs`) の変更が反映されていない可能性。対策: `target/release/wix/` ディレクトリを削除してからリビルド|
+|Tauri v2 の WiX テンプレート制約    |perUser MSI ビルド失敗|**ICE38 解消・ICE03 修正中（タスク33）**。キャッシュ削除で ICE38 解消。新たに ICE03 (Invalid registry path) が発生: `{{#each binaries}}` ループ内で `{{manufacturer}}` が Handlebars スコープ外のため空文字になり `Software\\` という無効パスが生成された。`{{../manufacturer}}` で親スコープ参照に修正。カスタム WiX テンプレートに Handlebars 変数を追加する際は `{{#each}}` ループ内のスコープに注意|
 
 -----
 

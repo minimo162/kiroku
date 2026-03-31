@@ -165,7 +165,7 @@
                 <File Id="Bin_{{ bin.id }}" Source="{{bin.path}}"/>
                 <RegistryValue
                     Root="HKCU"
-                    Key="Software\\{{manufacturer}}\\{{product_name}}"
+                    Key="Software\\{{../manufacturer}}\\{{../product_name}}"
                     Name="Sidecar_{{ bin.id }}"
                     Type="string"
                     Value="1"
