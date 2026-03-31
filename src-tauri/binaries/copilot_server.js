@@ -11,7 +11,7 @@ var DEFAULT_CDP_PORT = 9222;
 var COPILOT_URL = "https://m365.cloud.microsoft/chat/";
 var INPUT_SELECTOR = '#m365-chat-editor-target-element, [data-lexical-editor="true"]';
 var NEW_CHAT_BUTTON_SELECTOR = '[data-testid="newChatButton"]';
-var SEND_BUTTON_SELECTOR = '.fai-SendButton:not([disabled]), button[aria-label*="Send"]:not([disabled]), button[aria-label*="\u9001\u4FE1"]:not([disabled])';
+var SEND_BUTTON_ANY_SELECTOR = '.fai-SendButton, button[aria-label*="Send"], button[aria-label*="\u9001\u4FE1"]';
 var STOP_BUTTON_SELECTOR = ".fai-SendButton__stopBackground";
 var PLUS_BUTTON_SELECTORS = [
   '[data-testid="PlusMenuButton"]',
@@ -31,6 +31,12 @@ var ATTACHMENT_READY_SELECTORS = [
   '[data-testid*="image"]',
   '[aria-label*="Remove attachment"]',
   '[aria-label*="\u6DFB\u4ED8\u3092\u524A\u9664"]'
+];
+var ATTACHMENT_PENDING_SELECTORS = [
+  '[role="progressbar"]',
+  '[aria-busy="true"]',
+  '[data-testid*="progress"]',
+  '[data-testid*="loading"]'
 ];
 var RESPONSE_SELECTORS = [
   '[data-testid="markdown-reply"]',
@@ -157,12 +163,13 @@ ${userPrompt}` : userPrompt;
   }
 }
 async function submitPrompt(page) {
+  const sendButton = await waitForSendButtonReady(page);
   const responsePromise = page.waitForResponse(
     (candidate) => RESPONSE_URL_PATTERN.test(candidate.url()) && candidate.status() === 200 && candidate.request().method() === "POST" && isLikelyCopilotCompletion(candidate),
     { timeout: RESPONSE_TIMEOUT_MS }
   ).catch(() => {
   });
-  await page.locator(SEND_BUTTON_SELECTOR).first().click({ timeout: 1e4 });
+  await clickSendButton(sendButton);
   await responsePromise;
   return await waitForDomResponse(page);
 }
@@ -220,17 +227,6 @@ async function findFirstLocator(page, selectors) {
 async function waitForAttachmentReady(page, fileName) {
   const deadline = Date.now() + 15e3;
   while (Date.now() < deadline) {
-    const hasAttachedFile = await page.locator('input[type="file"]').evaluateAll(
-      (elements) => elements.some((element) => {
-        if (!(element instanceof HTMLInputElement)) {
-          return false;
-        }
-        return (element.files?.length ?? 0) > 0;
-      })
-    ).catch(() => false);
-    if (hasAttachedFile) {
-      return;
-    }
     const fileNameVisible = await page.getByText(fileName, { exact: false }).first().isVisible().catch(() => false);
     if (fileNameVisible) {
       return;
@@ -244,6 +240,58 @@ async function waitForAttachmentReady(page, fileName) {
     await page.waitForTimeout(250);
   }
   throw new Error("Copilot image attachment could not be confirmed");
+}
+async function waitForSendButtonReady(page) {
+  const deadline = Date.now() + 3e4;
+  let stableSince = 0;
+  while (Date.now() < deadline) {
+    const sendButton = await findFirstLocator(page, [SEND_BUTTON_ANY_SELECTOR]);
+    if (sendButton) {
+      const visible = await sendButton.isVisible().catch(() => false);
+      const enabled = await sendButton.isEnabled().catch(() => false);
+      const attachmentPending = await hasVisibleSelector(page, ATTACHMENT_PENDING_SELECTORS);
+      if (visible && enabled && !attachmentPending) {
+        if (!stableSince) {
+          stableSince = Date.now();
+        }
+        if (Date.now() - stableSince >= 750) {
+          await sendButton.scrollIntoViewIfNeeded().catch(() => {
+          });
+          return sendButton;
+        }
+      } else {
+        stableSince = 0;
+      }
+    }
+    await page.waitForTimeout(250);
+  }
+  throw new Error("Copilot send button did not become ready");
+}
+async function clickSendButton(sendButton) {
+  let lastError;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await sendButton.click({ timeout: 3e3 });
+      return;
+    } catch (error) {
+      lastError = error;
+      await sendButton.scrollIntoViewIfNeeded().catch(() => {
+      });
+      await sendButton.focus().catch(() => {
+      });
+      await sendButton.page().waitForTimeout(300);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Copilot send button click failed");
+}
+async function hasVisibleSelector(page, selectors) {
+  for (const selector of selectors) {
+    const visible = await page.locator(selector).first().isVisible().catch(() => false);
+    if (visible) {
+      return true;
+    }
+  }
+  return false;
 }
 function createServer2(session) {
   return http.createServer(async (req, res) => {

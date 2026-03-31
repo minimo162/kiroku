@@ -8,6 +8,7 @@ import {
   chromium,
   type Browser,
   type BrowserContext,
+  type Locator,
   type Page,
   type Response
 } from "playwright";
@@ -19,6 +20,8 @@ const INPUT_SELECTOR = "#m365-chat-editor-target-element, [data-lexical-editor=\
 const NEW_CHAT_BUTTON_SELECTOR = "[data-testid=\"newChatButton\"]";
 const SEND_BUTTON_SELECTOR =
   ".fai-SendButton:not([disabled]), button[aria-label*=\"Send\"]:not([disabled]), button[aria-label*=\"送信\"]:not([disabled])";
+const SEND_BUTTON_ANY_SELECTOR =
+  ".fai-SendButton, button[aria-label*=\"Send\"], button[aria-label*=\"送信\"]";
 const STOP_BUTTON_SELECTOR = ".fai-SendButton__stopBackground";
 const PLUS_BUTTON_SELECTORS = [
   "[data-testid=\"PlusMenuButton\"]",
@@ -38,6 +41,12 @@ const ATTACHMENT_READY_SELECTORS = [
   "[data-testid*=\"image\"]",
   "[aria-label*=\"Remove attachment\"]",
   "[aria-label*=\"添付を削除\"]"
+] as const;
+const ATTACHMENT_PENDING_SELECTORS = [
+  "[role=\"progressbar\"]",
+  "[aria-busy=\"true\"]",
+  "[data-testid*=\"progress\"]",
+  "[data-testid*=\"loading\"]"
 ] as const;
 const RESPONSE_SELECTORS = [
   "[data-testid=\"markdown-reply\"]",
@@ -201,6 +210,7 @@ async function pastePrompt(page: Page, systemPrompt: string, userPrompt: string)
 }
 
 async function submitPrompt(page: Page): Promise<string> {
+  const sendButton = await waitForSendButtonReady(page);
   const responsePromise = page
     .waitForResponse(
       (candidate: Response) =>
@@ -212,7 +222,7 @@ async function submitPrompt(page: Page): Promise<string> {
     )
     .catch(() => {});
 
-  await page.locator(SEND_BUTTON_SELECTOR).first().click({ timeout: 10_000 });
+  await clickSendButton(sendButton);
   await responsePromise;
 
   return await waitForDomResponse(page);
@@ -293,23 +303,6 @@ async function waitForAttachmentReady(page: Page, fileName: string): Promise<voi
   const deadline = Date.now() + 15_000;
 
   while (Date.now() < deadline) {
-    const hasAttachedFile = await page
-      .locator("input[type=\"file\"]")
-      .evaluateAll((elements) =>
-        elements.some((element) => {
-          if (!(element instanceof HTMLInputElement)) {
-            return false;
-          }
-
-          return (element.files?.length ?? 0) > 0;
-        })
-      )
-      .catch(() => false);
-
-    if (hasAttachedFile) {
-      return;
-    }
-
     const fileNameVisible = await page
       .getByText(fileName, { exact: false })
       .first()
@@ -334,6 +327,70 @@ async function waitForAttachmentReady(page: Page, fileName: string): Promise<voi
   }
 
   throw new Error("Copilot image attachment could not be confirmed");
+}
+
+async function waitForSendButtonReady(page: Page): Promise<Locator> {
+  const deadline = Date.now() + 30_000;
+  let stableSince = 0;
+
+  while (Date.now() < deadline) {
+    const sendButton = await findFirstLocator(page, [SEND_BUTTON_ANY_SELECTOR]);
+    if (sendButton) {
+      const visible = await sendButton.isVisible().catch(() => false);
+      const enabled = await sendButton.isEnabled().catch(() => false);
+      const attachmentPending = await hasVisibleSelector(page, ATTACHMENT_PENDING_SELECTORS);
+
+      if (visible && enabled && !attachmentPending) {
+        if (!stableSince) {
+          stableSince = Date.now();
+        }
+
+        if (Date.now() - stableSince >= 750) {
+          await sendButton.scrollIntoViewIfNeeded().catch(() => {});
+          return sendButton;
+        }
+      } else {
+        stableSince = 0;
+      }
+    }
+
+    await page.waitForTimeout(250);
+  }
+
+  throw new Error("Copilot send button did not become ready");
+}
+
+async function clickSendButton(sendButton: Locator): Promise<void> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await sendButton.click({ timeout: 3_000 });
+      return;
+    } catch (error) {
+      lastError = error;
+      await sendButton.scrollIntoViewIfNeeded().catch(() => {});
+      await sendButton.focus().catch(() => {});
+      await sendButton.page().waitForTimeout(300);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Copilot send button click failed");
+}
+
+async function hasVisibleSelector(page: Page, selectors: readonly string[]): Promise<boolean> {
+  for (const selector of selectors) {
+    const visible = await page
+      .locator(selector)
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (visible) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function createServer(session: CopilotSession): http.Server {
