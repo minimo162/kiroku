@@ -32,6 +32,37 @@ secrets and variables:
 When they are present, the release workflow signs the generated MSI and runs
 `signtool verify /pa /v` against the artifact.
 
+## WiX Custom Template (perUser Install)
+
+The MSI installer uses a custom WiX template (`src-tauri/wix/main.wxs`) to enable
+per-user installation without admin privileges. Tauri v2 does not expose an
+`installScope` config field, so the template is required.
+
+Key differences from the Tauri default template:
+
+- `InstallScope="perUser"` in the `Package` element
+- Install directory changed from `ProgramFiles64Folder` to `LocalAppDataFolder`
+  (installs to `%LOCALAPPDATA%\Kiroku`)
+- Components under `INSTALLDIR` use `HKCU RegistryValue` as `KeyPath` instead of
+  `File KeyPath` (required by WiX ICE38 for user-profile directories)
+- Deep link protocol registry entries use `HKCU` instead of `HKLM`
+
+### Troubleshooting WiX Build Errors
+
+Tauri suppresses `light.exe` error details. To see the actual WiX errors, run
+`light.exe` manually after a failed build:
+
+```powershell
+& "$env:LOCALAPPDATA/tauri/WixTools314/light.exe" -ext WixUIExtension -loc "src-tauri/target/release/wix/x64/locale.wxl" -out test.msi "src-tauri/target/release/wix/x64/main.wixobj" "src-tauri/target/release/wix/x64/data-retention.wixobj"
+```
+
+If template changes are not reflected, delete the WiX build cache and rebuild:
+
+```powershell
+Remove-Item -Recurse -Force src-tauri/target/release/wix
+npm run tauri build
+```
+
 ## Docs
 
 The end-user operating guide is available at
