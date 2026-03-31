@@ -53,29 +53,39 @@ pub fn run() {
                 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
                 let toggle_shortcut =
-                    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyR);
+                    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyK);
 
-                app.handle().plugin(
-                    tauri_plugin_global_shortcut::Builder::new()
-                        .with_shortcuts([toggle_shortcut])?
-                        .with_handler(move |app, shortcut, event| {
-                            if shortcut == &toggle_shortcut
-                                && event.state() == ShortcutState::Pressed
-                            {
-                                if let Some(state) = app.try_state::<AppState>() {
-                                    let app_handle = app.clone();
-                                    let state = state.inner().clone();
-                                    tauri::async_runtime::spawn(async move {
-                                        let _ = crate::recorder::toggle_recording_inner(
-                                            app_handle, state,
-                                        )
-                                        .await;
-                                    });
-                                }
-                            }
-                        })
-                        .build(),
-                )?;
+                match tauri_plugin_global_shortcut::Builder::new()
+                    .with_shortcuts([toggle_shortcut])
+                {
+                    Ok(builder) => {
+                        if let Err(error) = app.handle().plugin(
+                            builder
+                                .with_handler(move |app, shortcut, event| {
+                                    if shortcut == &toggle_shortcut
+                                        && event.state() == ShortcutState::Pressed
+                                    {
+                                        if let Some(state) = app.try_state::<AppState>() {
+                                            let app_handle = app.clone();
+                                            let state = state.inner().clone();
+                                            tauri::async_runtime::spawn(async move {
+                                                let _ = crate::recorder::toggle_recording_inner(
+                                                    app_handle, state,
+                                                )
+                                                .await;
+                                            });
+                                        }
+                                    }
+                                })
+                                .build(),
+                        ) {
+                            eprintln!("global-shortcut plugin init failed (continuing without shortcut): {error}");
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("global-shortcut registration failed (continuing without shortcut): {error}");
+                    }
+                }
             }
             Ok(())
         })

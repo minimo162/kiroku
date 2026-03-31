@@ -514,11 +514,45 @@
             "status": "pending"
           }
         ]
+      },
+      {
+        "id": 35,
+        "title": "グローバルショートカット登録失敗時のエラーハンドリング修正",
+        "description": "tauri dev 起動時に global-shortcut プラグインが「HotKey already registered: HotKey { mods: Modifiers(CONTROL | SHIFT), key: KeyR }」でパニックし、アプリが起動できない。Ctrl+Shift+R が他のプロセス（Vite dev server 等）に先に登録されている場合にクラッシュする。",
+        "details": "**エラー内容:**\n```\nthread 'main' panicked at tauri-2.10.3/src/app.rs:1299:11:\nFailed to setup app: error encountered during setup hook: failed to initialize plugin `global-shortcut`:\nHotKey already registered: HotKey { mods: Modifiers(CONTROL | SHIFT), key: KeyR, id: 34078756 }\n```\n\n**根本原因:**\n- `src-tauri/src/lib.rs` の setup hook で `tauri_plugin_global_shortcut::Builder::new().with_shortcuts([toggle_shortcut])?` を使用\n- `?` 演算子でエラーを即座に伝播し、setup hook 全体が失敗 → アプリがパニック\n- Ctrl+Shift+R は Vite dev server やブラウザの DevTools（強制リロード）など他プロセスが先に登録している可能性がある\n- `tauri dev` 環境だけでなく、ユーザーが他のアプリでこのショートカットを使っている場合にも発生しうる\n\n**修正方針:**\n1. ショートカット登録の `?` をエラーハンドリングに変更し、登録失敗時はログ警告を出してアプリ起動を継続する\n2. 登録失敗時はショートカット機能が無効になる旨を UI（ダッシュボードまたはトースト）で通知する\n3. 代替案として、ホットキーを Ctrl+Shift+K など競合しにくいキーに変更することも検討\n4. 将来的には設定画面でホットキーをカスタマイズ可能にする（F-008 の拡張）\n\n**影響範囲:**\n- `src-tauri/src/lib.rs`: setup hook 内の global-shortcut プラグイン初期化部分",
+        "testStrategy": "1. `npm run tauri dev` でアプリが正常に起動すること（Vite と共存）\n2. ショートカットが競合しない環境で Ctrl+Shift+R（または変更後のキー）で記録トグルが動作すること\n3. ショートカットが競合する環境でもアプリがクラッシュせず起動し、警告が表示されること\n4. リリースビルド（`npm run tauri build`）でも正常に動作すること",
+        "priority": "high",
+        "dependencies": [
+          1
+        ],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "lib.rs: global-shortcut プラグイン登録の ? を match/if let に変更し、登録失敗時はログ警告のみで起動を継続",
+            "status": "pending"
+          },
+          {
+            "id": 2,
+            "title": "ショートカットキーを Ctrl+Shift+K など競合しにくいキーに変更を検討",
+            "status": "pending"
+          },
+          {
+            "id": 3,
+            "title": "登録失敗時の UI 通知（トースト or ダッシュボード表示）を実装",
+            "status": "pending"
+          },
+          {
+            "id": 4,
+            "title": "tauri dev 環境および release ビルドで起動・動作確認",
+            "status": "pending"
+          }
+        ]
       }
     ],
     "metadata": {
       "created": "2026-03-30T12:24:28.400Z",
-      "updated": "2026-03-31T14:42:18+09:00",
+      "updated": "2026-03-31T15:10:00+09:00",
       "description": "Tasks for master context"
     }
   }

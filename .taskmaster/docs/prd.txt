@@ -367,6 +367,7 @@ Kiroku が出力した CSV ファイル（UTF-8 BOM付き）
 |Copilot Excelのトークン制限    |大量データの分析に制約    |日次CSV（1日分ずつ）で投入 / 要約済みデータに前処理                       |
 |バックグラウンド動作がPC性能に影響      |業務に支障          |スクショ取得・差分検出は軽量（<50ms）/ VLM推論はバッチのみ                  |
 |Tauri v2 の WiX テンプレート制約    |perUser MSI ビルド成功|**解決済み（タスク33）**。カスタム WiX テンプレートで `InstallScope="perUser"` + `LocalAppDataFolder` を使用。ICE38 (KeyPath を HKCU レジストリに変更) と ICE03 (Handlebars `{{#each}}` ループ内で `{{../manufacturer}}` 親スコープ参照) を修正。ビルド時は `target/release/wix/` キャッシュ削除が必要な場合あり|
+|グローバルショートカットの競合          |アプリが起動できない    |**原因特定済み（タスク35）**。`lib.rs` で `Ctrl+Shift+R` を `tauri-plugin-global-shortcut` で登録する際、他プロセス（Vite dev server 等）が同キーを先に登録していると `HotKey already registered` エラーでパニックする。修正方針: ショートカット登録失敗時にパニックせずログ警告で起動継続 + キーを競合しにくいものに変更|
 |VLMモデルのダウンロード失敗          |初回セットアップ不能    |**原因特定済み（タスク34）**。`model_manager.rs` のダウンロード URL が誤ったモデル (`Qwen2.5-VL-0.5B-Instruct`) を指していた。正しくは model: `https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-UD-Q6_K_XL.gguf`、mmproj: `https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/mmproj-BF16.gguf`。Zscaler 環境では TLS 中間証明書の影響で reqwest がエラーになる可能性あり → システム証明書ストアの利用 (native-tls) が必要|
 
 -----
