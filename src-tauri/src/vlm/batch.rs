@@ -50,6 +50,7 @@ struct BatchResult {
     completed: usize,
     failed: usize,
     cancelled: bool,
+    error: Option<String>,
 }
 
 #[tauri::command]
@@ -201,7 +202,7 @@ async fn vlm_batch_loop(
     mut pause_rx: watch::Receiver<bool>,
     options: BatchOptions,
 ) {
-    if let Err(error) = ensure_vlm_server_running(&state, &options).await {
+    if let Err(error) = ensure_vlm_server_running(&app, &state, &options).await {
         finish_batch(
             &app,
             &state,
@@ -210,6 +211,7 @@ async fn vlm_batch_loop(
                 completed: 0,
                 failed: 0,
                 cancelled: false,
+                error: None,
             },
             Some(error.to_string()),
             &options,
@@ -233,6 +235,7 @@ async fn vlm_batch_loop(
                     completed: 0,
                     failed: 0,
                     cancelled: false,
+                    error: None,
                 },
                 Some(error.to_string()),
                 &options,
@@ -261,6 +264,7 @@ async fn vlm_batch_loop(
                 completed: 0,
                 failed: 0,
                 cancelled: false,
+                error: None,
             },
             None,
             &options,
@@ -280,8 +284,11 @@ async fn vlm_batch_loop(
     let mut completed = 0;
     let mut failed = 0;
     let mut elapsed_times = Vec::new();
+    let mut server_restarted = false;
+    let mut index = 0;
 
-    for record in unprocessed {
+    while index < unprocessed.len() {
+        let record = &unprocessed[index];
         if should_stop(&cancel_rx) {
             break;
         }
@@ -295,6 +302,7 @@ async fn vlm_batch_loop(
                     completed,
                     failed,
                     cancelled: true,
+                    error: None,
                 },
                 Some(error.to_string()),
                 &options,
@@ -316,6 +324,7 @@ async fn vlm_batch_loop(
             Some(path) => path.to_string(),
             None => {
                 failed += 1;
+                index += 1;
                 continue;
             }
         };
@@ -349,16 +358,77 @@ async fn vlm_batch_loop(
                         }
                         completed += 1;
                         elapsed_times.push(started_at.elapsed().as_secs());
+                        index += 1;
                     }
                     Err(error) => {
                         failed += 1;
                         eprintln!("failed to update VLM result for {}: {error}", record.id);
+                        index += 1;
                     }
                 }
             }
             Err(error) => {
+                if matches!(&error, VlmError::Http(_)) {
+                    let health = {
+                        let server = state.vlm_server.lock().await;
+                        server.health_check().await
+                    };
+
+                    if health.is_err() {
+                        if server_restarted {
+                            eprintln!(
+                                "llama-server appears to have crashed again during batch processing"
+                            );
+                            finish_batch(
+                                &app,
+                                &state,
+                                BatchResult {
+                                    total,
+                                    completed,
+                                    failed,
+                                    cancelled: false,
+                                    error: None,
+                                },
+                                Some(
+                                    "分析エンジンが再起動後も停止しました。llama-server.log を確認してください。"
+                                        .to_string(),
+                                ),
+                                &options,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        eprintln!("llama-server appears to have crashed, attempting restart...");
+                        if let Err(restart_error) =
+                            ensure_vlm_server_running(&app, &state, &options).await
+                        {
+                            eprintln!("failed to restart llama-server: {restart_error}");
+                            finish_batch(
+                                &app,
+                                &state,
+                                BatchResult {
+                                    total,
+                                    completed,
+                                    failed,
+                                    cancelled: false,
+                                    error: None,
+                                },
+                                Some(restart_error.to_string()),
+                                &options,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        server_restarted = true;
+                        continue;
+                    }
+                }
+
                 failed += 1;
                 eprintln!("failed to infer VLM description for {}: {error}", record.id);
+                index += 1;
             }
         }
     }
@@ -369,12 +439,14 @@ async fn vlm_batch_loop(
         completed,
         failed,
         cancelled,
+        error: None,
     };
 
     finish_batch(&app, &state, result, None, &options).await;
 }
 
 async fn ensure_vlm_server_running(
+    app: &AppHandle,
     state: &AppState,
     options: &BatchOptions,
 ) -> Result<(), VlmError> {
@@ -394,20 +466,27 @@ async fn ensure_vlm_server_running(
         ));
     };
 
+    let data_dir = state.app_paths.data_dir.clone();
     let mut server = state.vlm_server.lock().await;
     server
         .start(
             Path::new(model_path),
             Path::new(mmproj_path),
+            &data_dir,
             options.n_threads,
         )
-        .await
+        .await?;
+    drop(server);
+
+    let snapshot = update_vlm_state(state, Some(true), None, None).await;
+    let _ = app.emit("vlm-status", &snapshot);
+    Ok(())
 }
 
 async fn finish_batch(
     app: &AppHandle,
     state: &AppState,
-    result: BatchResult,
+    mut result: BatchResult,
     last_error: Option<String>,
     options: &BatchOptions,
 ) {
@@ -422,6 +501,7 @@ async fn finish_batch(
         None
     };
     let last_error = last_error.or(stop_error);
+    result.error = last_error.clone();
     let snapshot = update_vlm_state(
         state,
         options.stop_server_when_done.then_some(false),
@@ -445,7 +525,7 @@ async fn finish_batch(
     let _ = app.emit("vlm-batch-complete", &result);
 
     if options.notify_on_completion {
-        let body = if let Some(error) = last_error {
+        let body = if let Some(error) = result.error.clone() {
             format!("夜間バッチの完了時にエラーが発生しました: {error}")
         } else if result.cancelled {
             format!(

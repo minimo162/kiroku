@@ -82,6 +82,7 @@ impl LlamaServer {
         &mut self,
         model_path: &Path,
         mmproj_path: &Path,
+        data_dir: &Path,
         n_threads: usize,
     ) -> Result<(), VlmError> {
         if self.health_check().await.is_ok() {
@@ -93,8 +94,10 @@ impl LlamaServer {
         }
 
         let binary_path = self.binary_path.clone().ok_or(VlmError::BinaryNotFound)?;
+        let log_path = llama_server_log_path(data_dir);
+        let stderr_file = open_llama_server_log_file(&log_path)?;
 
-        let child = Command::new(binary_path)
+        let child = match Command::new(binary_path)
             .args([
                 "-m",
                 &model_path.to_string_lossy(),
@@ -108,15 +111,22 @@ impl LlamaServer {
                 &n_threads.to_string(),
                 "--ctx-size",
                 "4096",
-                "--log-disable",
             ])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
+            .stderr(Stdio::from(stderr_file))
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(error) => {
+                eprintln!("llama-server log: {}", log_path.display());
+                return Err(error.into());
+            }
+        };
 
         self.process = Some(child);
         if let Err(error) = self.wait_for_ready(DEFAULT_READY_TIMEOUT_SECS).await {
             let _ = self.stop();
+            eprintln!("llama-server log: {}", log_path.display());
             return Err(error);
         }
 
@@ -219,11 +229,17 @@ pub async fn start_vlm_server(
     n_threads: Option<usize>,
 ) -> Result<VlmState, String> {
     let n_threads = n_threads.unwrap_or_else(default_thread_count);
+    let data_dir = state.app_paths.data_dir.clone();
 
     let result = {
         let mut server = state.vlm_server.lock().await;
         server
-            .start(Path::new(&model_path), Path::new(&mmproj_path), n_threads)
+            .start(
+                Path::new(&model_path),
+                Path::new(&mmproj_path),
+                &data_dir,
+                n_threads,
+            )
             .await
     };
 
@@ -286,6 +302,37 @@ pub fn default_thread_count() -> usize {
     std::thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(4)
+}
+
+fn llama_server_log_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("logs").join("llama-server.log")
+}
+
+fn open_llama_server_log_file(log_path: &Path) -> Result<fs::File, io::Error> {
+    if let Some(parent) = log_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    match fs::File::create(log_path) {
+        Ok(file) => Ok(file),
+        Err(primary_error) => fs::File::create(null_device_path()).map_err(|fallback_error| {
+            io::Error::new(
+                fallback_error.kind(),
+                format!(
+                    "failed to open llama-server log file at {}: {primary_error}; fallback failed: {fallback_error}",
+                    log_path.display()
+                ),
+            )
+        }),
+    }
+}
+
+fn null_device_path() -> &'static str {
+    if cfg!(windows) {
+        "NUL"
+    } else {
+        "/dev/null"
+    }
 }
 
 pub async fn update_vlm_state(

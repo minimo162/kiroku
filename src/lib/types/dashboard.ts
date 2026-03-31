@@ -28,6 +28,14 @@ export type VlmProgressPayload = {
   estimated_remaining_secs: number | null;
 };
 
+export type VlmBatchCompletePayload = {
+  total: number;
+  completed: number;
+  failed: number;
+  cancelled: boolean;
+  error: string | null;
+};
+
 export type RecentCapture = {
   id: string;
   timestamp: string;

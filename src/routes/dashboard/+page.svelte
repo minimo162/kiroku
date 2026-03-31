@@ -9,6 +9,7 @@
     DashboardStat,
     DashboardStatsPayload,
     RecentCapture,
+    VlmBatchCompletePayload,
     VlmProgressPayload
   } from "$lib/types/dashboard";
 
@@ -41,6 +42,8 @@
   let actionPending = $state<"recording" | "batch" | null>(null);
   let stopConfirmOpen = $state(false);
   let tauriAvailable = $state(false);
+  let showGuide = $state(false);
+  let lastBatchResult = $state<VlmBatchCompletePayload | null>(null);
 
   const isTauri = () =>
     typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -74,6 +77,36 @@
   const progressPercent = () => {
     if (vlmProgress.total === 0) return 0;
     return Math.min(100, Math.round((vlmProgress.completed / vlmProgress.total) * 100));
+  };
+
+  const processedCount = () => vlmProgress.completed + vlmProgress.failed;
+
+  const batchStatusMessage = () => {
+    if (stats.batch_running && !stats.server_running) {
+      return "分析エンジンを起動しています...";
+    }
+    if (stats.batch_running && vlmProgress.total > 0) {
+      return `${vlmProgress.total}件中${processedCount()}件処理済み`;
+    }
+    if (stats.batch_running) {
+      return "説明文の一括生成を準備しています...";
+    }
+    if (lastBatchResult?.error) {
+      return `説明文の生成中にエラーが発生しました: ${lastBatchResult.error}`;
+    }
+    if (lastBatchResult?.cancelled) {
+      return `中断: ${lastBatchResult.completed}件の説明文を生成しました`;
+    }
+    if (lastBatchResult && lastBatchResult.total > 0) {
+      return `完了: ${lastBatchResult.completed}件の説明文を生成しました`;
+    }
+    if (stats.scheduler_enabled) {
+      return `次回バッチは ${formatSchedule(stats.next_batch_run_at)} に予定されています。`;
+    }
+    if (stats.server_running) {
+      return "分析エンジンは起動済みです。一括生成を開始できます。";
+    }
+    return "分析エンジンが停止中のため、一括生成は待機しています。";
   };
 
   const buildStatCards = (): DashboardStat[] => [
@@ -175,6 +208,7 @@
     if (!isTauri()) return;
 
     actionPending = "batch";
+    lastBatchResult = null;
     try {
       const started = await invoke<boolean>("run_vlm_batch");
       if (started) {
@@ -202,8 +236,16 @@
     }
   }
 
+  function dismissGuide() {
+    showGuide = false;
+    localStorage.setItem("kiroku-guide-shown", "1");
+  }
+
   onMount(() => {
     tauriAvailable = isTauri();
+    if (!localStorage.getItem("kiroku-guide-shown")) {
+      showGuide = true;
+    }
     void refreshDashboard();
 
     if (!tauriAvailable) {
@@ -235,8 +277,12 @@
           await refreshDashboard();
         }
       });
-      const batchCompleteUnlisten = await listen("vlm-batch-complete", async () => {
+      const batchCompleteUnlisten = await listen<VlmBatchCompletePayload>("vlm-batch-complete", async (event) => {
         if (!disposed) {
+          lastBatchResult = event.payload;
+          if (event.payload.error) {
+            addToast("error", `説明文の生成中にエラーが発生しました: ${event.payload.error}`);
+          }
           await refreshDashboard();
         }
       });
@@ -278,6 +324,21 @@
 </svelte:head>
 
 <section class="space-y-4">
+  {#if showGuide}
+    <div class="rounded-[1.5rem] border border-brass-200 bg-brass-50 p-4">
+      <p class="text-sm leading-7 text-brass-900">
+        スクリーンショットの記録は自動で行われます。説明文は「説明文を一括生成」ボタンで生成できます。
+      </p>
+      <button
+        class="mt-2 text-xs font-semibold text-brass-600 transition hover:text-brass-800"
+        type="button"
+        onclick={dismissGuide}
+      >
+        閉じる
+      </button>
+    </div>
+  {/if}
+
   <div class="overflow-hidden rounded-[2rem] border border-white/70 bg-white/80 shadow-panel backdrop-blur">
     <div class="grid gap-6 px-6 py-6 lg:grid-cols-[1.2fr_0.8fr] lg:px-8">
       <div class="space-y-5">
@@ -316,6 +377,8 @@
           >
             {#if actionPending === "batch"}
               実行中...
+            {:else if stats.batch_running && !stats.server_running}
+              起動中...
             {:else if stats.batch_running}
               生成中...
             {:else}
@@ -358,6 +421,31 @@
               {/if}
             </div>
             <p class="mt-2 text-sm font-medium">{stats.last_error ?? "なし"}</p>
+          </div>
+          <div
+            class="rounded-2xl border bg-white px-4 py-4 text-ink-900 sm:col-span-2"
+            class:border-brass-200={stats.server_running && !stats.last_error}
+            class:border-cinnabar-200={!!stats.last_error}
+            class:border-ink-200={!stats.server_running && !stats.last_error}
+          >
+            <p class="text-sm text-ink-500">分析エンジン</p>
+            <p
+              class="mt-1 font-semibold"
+              class:text-brass-700={stats.server_running && !stats.last_error}
+              class:text-cinnabar-700={!!stats.last_error}
+              class:text-ink-400={!stats.server_running && !stats.last_error}
+            >
+              {#if stats.last_error}
+                エラー
+              {:else if stats.server_running}
+                稼働中
+              {:else}
+                未起動
+              {/if}
+            </p>
+            {#if stats.last_error}
+              <p class="mt-1 text-xs text-cinnabar-600">{stats.last_error}</p>
+            {/if}
           </div>
         </div>
       </div>
@@ -405,16 +493,19 @@
       </div>
 
       <p class="mt-5 text-sm leading-6 text-ink-500">
-        {#if vlmProgress.current_id}
-          現在処理中: <span class="font-medium text-ink-700">{vlmProgress.current_id}</span>
+        {#if stats.batch_running && !stats.server_running}
+          分析エンジンを起動しています...
         {:else if stats.batch_running}
-          次のフレームを処理中です。
-        {:else if stats.scheduler_enabled}
-          次回バッチは <span class="font-medium text-ink-700">{formatSchedule(stats.next_batch_run_at)}</span> に予定されています。
-        {:else if stats.server_running}
-          分析エンジンは起動済みです。一括生成を開始できます。
+          {batchStatusMessage()}
+          {#if vlmProgress.current_id}
+            <span class="block font-medium text-ink-700">現在処理中: {vlmProgress.current_id}</span>
+          {/if}
+        {:else if lastBatchResult?.error}
+          {batchStatusMessage()}
+        {:else if vlmProgress.current_id}
+          現在処理中: <span class="font-medium text-ink-700">{vlmProgress.current_id}</span>
         {:else}
-          分析エンジンが停止中のため、一括生成は待機しています。
+          {batchStatusMessage()}
         {/if}
       </p>
     </article>
