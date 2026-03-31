@@ -77,7 +77,7 @@
             <p class="text-xs font-semibold uppercase tracking-[0.32em] text-white/55">Kiroku</p>
             <h1 class="mt-3 text-2xl font-bold">業務記録ダッシュボード</h1>
             <p class="mt-3 text-sm leading-6 text-white/75">
-              キャプチャ、差分検出、VLM 処理状況を一つの画面で確認します。
+              キャプチャ状況と説明文の生成状況を一つの画面で確認します。
             </p>
           </div>
 
@@ -105,7 +105,7 @@
                       : "bg-ink-100 text-ink-400"
                   }`}
                 >
-                  {item.status}
+                  {item.status === "live" ? "有効" : item.status}
                 </span>
               </a>
             {/each}
@@ -114,7 +114,7 @@
           <div class="mt-auto rounded-[1.5rem] border border-ink-100 bg-ink-50/80 px-4 py-4">
             <p class="text-xs font-semibold uppercase tracking-[0.24em] text-ink-400">ショートカット</p>
             <p class="mt-3 text-sm leading-6 text-ink-600">
-              `Ctrl+Shift+R` で記録開始/停止。
+              `Ctrl+Shift+K` で記録開始/停止。
               ウィンドウを閉じてもトレイに常駐します。
             </p>
           </div>

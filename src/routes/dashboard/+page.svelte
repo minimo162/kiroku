@@ -94,18 +94,18 @@
       tone: "ink"
     },
     {
-      title: "VLM 処理済み",
+      title: "説明文つき",
       value: String(stats.vlm_processed),
       unit: "枚",
       detail: stats.server_running
         ? stats.batch_running
-          ? "バッチ処理が進行中です"
+          ? "一括生成が進行中です"
           : stats.scheduler_enabled
             ? `次回 ${formatSchedule(stats.next_batch_run_at)}`
             : "手動実行モードです"
         : stats.scheduler_enabled
           ? `次回 ${formatSchedule(stats.next_batch_run_at)}`
-          : "VLM サーバー停止中です",
+          : "分析エンジン停止中です",
       tone: "brass"
     }
   ];
@@ -178,9 +178,9 @@
     try {
       const started = await invoke<boolean>("run_vlm_batch");
       if (started) {
-        addToast("success", "VLM バッチを開始しました。");
+        addToast("success", "説明文の一括生成を開始しました。");
       } else {
-        addToast("info", "VLM バッチはすでに実行中です。");
+        addToast("info", "一括生成はすでに実行中です。");
       }
       await refreshDashboard();
     } catch (error) {
@@ -282,13 +282,13 @@
     <div class="grid gap-6 px-6 py-6 lg:grid-cols-[1.2fr_0.8fr] lg:px-8">
       <div class="space-y-5">
         <div class="inline-flex items-center rounded-full border border-brass-200 bg-brass-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-brass-700">
-          Live Monitor
+          リアルタイム
         </div>
         <div class="space-y-3">
           <h2 class="text-3xl font-bold text-ink-900 sm:text-4xl">今日の記録状況を一目で確認</h2>
           <p class="max-w-2xl text-sm leading-7 text-ink-500 sm:text-base">
-            キャプチャ枚数、VLM 進捗、最新フレームを同じ画面で追えます。
-            トレイ常駐中でもこの画面に戻れば直近の状態を再取得します。
+            キャプチャ枚数、説明文の生成進捗、最新の記録を同じ画面で追えます。
+            トレイ常駐中でもこの画面に戻れば最新の状態を再取得します。
           </p>
         </div>
 
@@ -317,23 +317,23 @@
             {#if actionPending === "batch"}
               実行中...
             {:else if stats.batch_running}
-              VLM 実行中
+              生成中...
             {:else}
-              VLM バッチ実行
+              説明文を一括生成
             {/if}
           </button>
         </div>
       </div>
 
       <div class="rounded-[1.75rem] border border-ink-100 bg-ink-900 px-5 py-5 text-white">
-        <p class="text-xs font-semibold uppercase tracking-[0.24em] text-white/60">System State</p>
+        <p class="text-xs font-semibold uppercase tracking-[0.24em] text-white/60">システム状態</p>
         <div class="mt-5 grid gap-3 sm:grid-cols-2">
           <div class="rounded-2xl bg-white/8 px-4 py-4">
             <p class="text-xs uppercase tracking-[0.2em] text-white/50">記録状態</p>
             <p class="mt-2 text-lg font-semibold">{stats.is_recording ? "録画中" : "停止中"}</p>
           </div>
           <div class="rounded-2xl bg-white/8 px-4 py-4">
-            <p class="text-xs uppercase tracking-[0.2em] text-white/50">VLM サーバー</p>
+            <p class="text-xs uppercase tracking-[0.2em] text-white/50">分析エンジン</p>
             <p class="mt-2 text-lg font-semibold">{stats.server_running ? "起動中" : "停止中"}</p>
           </div>
           <div class="rounded-2xl bg-white/8 px-4 py-4">
@@ -374,8 +374,8 @@
     <article class="rounded-[1.75rem] border border-white/70 bg-white/80 p-6 shadow-panel backdrop-blur">
       <div class="flex items-center justify-between gap-4">
         <div>
-          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">VLM Progress</p>
-          <h3 class="mt-2 text-2xl font-bold text-ink-900">夜間バッチの進捗</h3>
+          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">生成進捗</p>
+          <h3 class="mt-2 text-2xl font-bold text-ink-900">説明文の一括生成</h3>
         </div>
         <div class="rounded-full bg-ink-100 px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-ink-500">
           {progressPercent()}%
@@ -412,9 +412,9 @@
         {:else if stats.scheduler_enabled}
           次回バッチは <span class="font-medium text-ink-700">{formatSchedule(stats.next_batch_run_at)}</span> に予定されています。
         {:else if stats.server_running}
-          VLM サーバーは起動済みです。バッチを開始できます。
+          分析エンジンは起動済みです。一括生成を開始できます。
         {:else}
-          VLM サーバーが停止中のため、バッチは待機しています。
+          分析エンジンが停止中のため、一括生成は待機しています。
         {/if}
       </p>
     </article>
@@ -422,7 +422,7 @@
     <article class="rounded-[1.75rem] border border-white/70 bg-white/80 p-6 shadow-panel backdrop-blur">
       <div class="flex items-center justify-between gap-4">
         <div>
-          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">Recent Frames</p>
+          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">最新の記録</p>
           <h3 class="mt-2 text-2xl font-bold text-ink-900">最新キャプチャ</h3>
         </div>
         <div class="rounded-full border border-ink-100 px-3 py-2 text-xs font-semibold text-ink-500">
@@ -454,12 +454,12 @@
                       capture.vlm_processed ? "text-brass-700" : "text-ink-400"
                     }`}
                   >
-                    {capture.vlm_processed ? "processed" : "queued"}
+                    {capture.vlm_processed ? "処理済み" : "待機中"}
                   </p>
                 </div>
               </div>
               <p class="mt-3 text-sm leading-6 text-ink-500">
-                {capture.description ?? "VLM 記述はまだ生成されていません。"}
+                {capture.description ?? "説明文はまだ生成されていません。"}
               </p>
             </div>
           {/each}
@@ -472,7 +472,7 @@
 {#if stopConfirmOpen}
   <div class="fixed inset-0 z-40 flex items-center justify-center bg-ink-950/45 px-4">
     <div class="w-full max-w-md rounded-[1.75rem] border border-white/70 bg-white px-6 py-6 shadow-panel">
-      <p class="text-xs font-semibold uppercase tracking-[0.24em] text-cinnabar-600">Stop Recording</p>
+      <p class="text-xs font-semibold uppercase tracking-[0.24em] text-cinnabar-600">記録停止</p>
       <h3 class="mt-3 text-2xl font-bold text-ink-900">記録を停止しますか？</h3>
       <p class="mt-3 text-sm leading-7 text-ink-500">
         記録を停止すると新しいキャプチャ取得が中断されます。

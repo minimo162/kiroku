@@ -178,19 +178,19 @@
     <div class="grid gap-6 px-6 py-6 lg:grid-cols-[1.1fr_0.9fr] lg:px-8">
       <div class="space-y-4">
         <div class="inline-flex items-center rounded-full border border-brass-200 bg-brass-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-brass-700">
-          Export
+          エクスポート
         </div>
         <h2 class="text-3xl font-bold text-ink-900">CSV エクスポート</h2>
         <p class="max-w-2xl text-sm leading-7 text-ink-500 sm:text-base">
-          日付範囲、対象アプリ、VLM 処理済みのみの条件を組み合わせて CSV を出力します。
+          日付範囲、対象アプリ、説明文つきのみの条件を組み合わせて CSV を出力します。
           件数プレビューは条件変更のたびに更新されます。
         </p>
       </div>
 
       <div class="rounded-[1.75rem] border border-ink-100 bg-ink-900 px-5 py-5 text-white">
-        <p class="text-xs font-semibold uppercase tracking-[0.24em] text-white/60">Export Notes</p>
+        <p class="text-xs font-semibold uppercase tracking-[0.24em] text-white/60">出力について</p>
         <div class="mt-4 space-y-3 text-sm leading-6 text-white/80">
-          <p>CSV は UTF-8 BOM 付きで出力され、Excel でも文字化けしにくい形式です。</p>
+          <p>CSV は Excel 対応形式で出力され、文字化けしにくくなっています。</p>
           <p>アプリフィルタ未選択時は、全アプリが対象になります。</p>
           <p>マスキングを有効にすると、設定画面で登録した置換ルールを適用します。</p>
           <p>出力後は Explorer で保存先ファイルをそのまま表示できます。</p>
@@ -201,7 +201,7 @@
 
   <div class="grid gap-4 xl:grid-cols-[1fr_0.92fr]">
     <article class="rounded-[1.75rem] border border-white/70 bg-white/80 p-6 shadow-panel backdrop-blur">
-      <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">Filters</p>
+      <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">絞り込み</p>
       <h3 class="mt-2 text-2xl font-bold text-ink-900">出力条件</h3>
 
       <div class="mt-6 grid gap-5 md:grid-cols-2">
@@ -232,8 +232,8 @@
 
       <label class="mt-5 flex items-center justify-between rounded-2xl border border-ink-100 px-4 py-4">
         <div>
-          <p class="text-sm font-medium text-ink-700">VLM 処理済みのみ</p>
-          <p class="mt-1 text-sm text-ink-500">記述が付与されたレコードだけに絞り込みます。</p>
+          <p class="text-sm font-medium text-ink-700">説明文つきのみ</p>
+          <p class="mt-1 text-sm text-ink-500">説明文がついた記録だけに絞り込みます。</p>
         </div>
         <input
           class="h-5 w-5 accent-brass-600"
@@ -247,7 +247,7 @@
         <div>
           <p class="text-sm font-medium text-ink-700">マスキングを適用</p>
           <p class="mt-1 text-sm text-ink-500">
-            設定画面のルールで `window_title` と `description` を置換してから出力します。
+            設定画面のルールでウィンドウタイトルと説明文を置換してから出力します。
           </p>
         </div>
         <input
@@ -312,11 +312,11 @@
     </article>
 
     <article class="rounded-[1.75rem] border border-white/70 bg-white/80 p-6 shadow-panel backdrop-blur">
-      <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">Preview</p>
+      <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">確認</p>
       <h3 class="mt-2 text-2xl font-bold text-ink-900">出力前の確認</h3>
 
       <div class="mt-6 rounded-[1.5rem] border border-brass-100 bg-brass-50 px-5 py-5">
-        <p class="text-xs font-semibold uppercase tracking-[0.22em] text-brass-700">Preview Count</p>
+        <p class="text-xs font-semibold uppercase tracking-[0.22em] text-brass-700">出力件数</p>
         <div class="mt-3 flex items-end gap-3">
           <span class="text-4xl font-bold text-ink-900">{previewCount}</span>
           <span class="pb-1 text-sm text-ink-500">件が出力されます</span>
@@ -338,7 +338,7 @@
           <span class="font-semibold text-ink-900">アプリ:</span>
           {filter.apps?.join(", ") ?? "すべて"}
         </p>
-        <p><span class="font-semibold text-ink-900">処理条件:</span> {filter.only_processed ? "VLM 処理済みのみ" : "未処理も含む"}</p>
+        <p><span class="font-semibold text-ink-900">処理条件:</span> {filter.only_processed ? "説明文つきのみ" : "すべて含む"}</p>
       </div>
 
       <div class="mt-6 flex flex-wrap gap-3">

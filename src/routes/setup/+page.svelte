@@ -135,24 +135,23 @@
     <div class="grid gap-6 px-6 py-8 lg:grid-cols-[1.05fr_0.95fr] lg:px-8">
       <div class="space-y-4">
         <div class="inline-flex items-center rounded-full border border-brass-200 bg-brass-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-brass-700">
-          Setup Wizard
+          セットアップ
         </div>
         <h1 class="text-4xl font-bold text-ink-900">Kiroku の初回セットアップ</h1>
         <p class="max-w-2xl text-sm leading-7 text-ink-500 sm:text-base">
-          モデルファイルの準備、テストキャプチャ、完了フラグの保存を順に進めます。
-          非エンジニアでも使い始められるよう、必要な手順だけを 3 ステップでまとめています。
+          AI エンジンのダウンロード、動作確認、初期設定の 3 ステップで準備を進めます。
         </p>
       </div>
 
       <div class="rounded-[1.75rem] border border-ink-100 bg-ink-900 px-5 py-5 text-white">
-        <p class="text-xs font-semibold uppercase tracking-[0.24em] text-white/60">Current Status</p>
+        <p class="text-xs font-semibold uppercase tracking-[0.24em] text-white/60">現在の状態</p>
         <div class="mt-4 grid gap-3 sm:grid-cols-2">
           <div class="rounded-2xl bg-white/8 px-4 py-4">
             <p class="text-xs uppercase tracking-[0.2em] text-white/50">モデル</p>
             <p class="mt-2 text-lg font-semibold">{status.model_ready ? "準備完了" : "未配置"}</p>
           </div>
           <div class="rounded-2xl bg-white/8 px-4 py-4">
-            <p class="text-xs uppercase tracking-[0.2em] text-white/50">llama-server</p>
+            <p class="text-xs uppercase tracking-[0.2em] text-white/50">分析エンジン</p>
             <p class="mt-2 text-lg font-semibold">{status.llama_server_available ? "検出済み" : "未検出"}</p>
           </div>
         </div>
@@ -165,12 +164,12 @@
 
   <div class="grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
     <article class="rounded-[1.75rem] border border-white/70 bg-white/80 p-6 shadow-panel backdrop-blur">
-      <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">Steps</p>
+      <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">手順</p>
       <div class="mt-5 space-y-3">
         {#each [
-          { id: "welcome", title: "1. モデル準備" },
-          { id: "model-download", title: "2. ダウンロード進捗" },
-          { id: "test-capture", title: "3. テストキャプチャ" },
+          { id: "welcome", title: "1. ダウンロード準備" },
+          { id: "model-download", title: "2. ダウンロード中" },
+          { id: "test-capture", title: "3. 動作確認" },
           { id: "complete", title: "4. 完了" }
         ] as step}
           <div
@@ -194,11 +193,11 @@
       {:else if currentStep === "welcome"}
         <div class="space-y-5">
           <div>
-            <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">Welcome</p>
-            <h2 class="mt-2 text-3xl font-bold text-ink-900">まずモデルを準備します</h2>
+            <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">ようこそ</p>
+            <h2 class="mt-2 text-3xl font-bold text-ink-900">AI エンジンを準備します</h2>
           </div>
           <p class="text-sm leading-7 text-ink-500">
-            Qwen 系 GGUF モデルと `mmproj` を `models/` に配置します。すでに存在する場合は再ダウンロードしません。
+            画面を読み取る AI エンジンをダウンロードします。ダウンロード済みなら再取得しません。
           </p>
           <button
             class="rounded-full bg-ink-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-60"
@@ -211,7 +210,7 @@
       {:else if currentStep === "model-download"}
         <div class="space-y-5">
           <div>
-            <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">Download</p>
+            <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">ダウンロード</p>
             <h2 class="mt-2 text-3xl font-bold text-ink-900">モデルをダウンロード中</h2>
           </div>
           <div class="rounded-[1.5rem] border border-ink-100 bg-ink-50/70 px-5 py-5">
@@ -250,11 +249,11 @@
       {:else if currentStep === "test-capture"}
         <div class="space-y-5">
           <div>
-            <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">Test Capture</p>
+            <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">動作確認</p>
             <h2 class="mt-2 text-3xl font-bold text-ink-900">動作確認を行います</h2>
           </div>
           <p class="text-sm leading-7 text-ink-500">
-            モデル準備が終わったので、最後にテストキャプチャを実行して記録経路が動くか確認します。
+            ダウンロードが完了しました。画面キャプチャが正常に動作するかテストします。
           </p>
           {#if testCaptureMessage}
             <div class="rounded-[1.25rem] border border-brass-100 bg-brass-50 px-4 py-3 text-sm text-brass-800">
@@ -267,7 +266,7 @@
               onclick={runTestCapture}
               disabled={!tauriAvailable || testingCapture}
             >
-              {testingCapture ? "確認中..." : "テストキャプチャを実行"}
+              {testingCapture ? "確認中..." : "動作確認を実行"}
             </button>
             <button
               class="rounded-full border border-ink-200 bg-white px-5 py-3 text-sm font-semibold text-ink-700 transition hover:border-brass-300 hover:text-brass-700"
@@ -282,17 +281,17 @@
       {:else}
         <div class="space-y-5">
           <div>
-            <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">Complete</p>
+            <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">完了</p>
             <h2 class="mt-2 text-3xl font-bold text-ink-900">セットアップを完了します</h2>
           </div>
           <p class="text-sm leading-7 text-ink-500">
-            ここで完了フラグを保存すると、次回起動時から通常のダッシュボードへ直接入ります。
+            完了すると、次回からダッシュボードに直接入ります。
           </p>
           <div class="rounded-[1.5rem] border border-ink-100 bg-ink-50/70 px-5 py-5 text-sm leading-7 text-ink-600">
             <p><span class="font-semibold text-ink-900">モデル:</span> {status.model_path ?? "未配置"}</p>
-            <p><span class="font-semibold text-ink-900">mmproj:</span> {status.mmproj_path ?? "未配置"}</p>
+            <p><span class="font-semibold text-ink-900">画像認識モジュール:</span> {status.mmproj_path ?? "未配置"}</p>
             <p>
-              <span class="font-semibold text-ink-900">llama-server:</span>
+              <span class="font-semibold text-ink-900">分析エンジン:</span>
               {status.llama_server_available ? " 検出済み" : " 未検出"}
             </p>
           </div>

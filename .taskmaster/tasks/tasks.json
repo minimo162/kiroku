@@ -530,12 +530,12 @@
           {
             "id": 1,
             "title": "lib.rs: global-shortcut プラグイン登録の ? を match/if let に変更し、登録失敗時はログ警告のみで起動を継続",
-            "status": "pending"
+            "status": "done"
           },
           {
             "id": 2,
             "title": "ショートカットキーを Ctrl+Shift+K など競合しにくいキーに変更を検討",
-            "status": "pending"
+            "status": "done"
           },
           {
             "id": 3,
@@ -545,14 +545,269 @@
           {
             "id": 4,
             "title": "tauri dev 環境および release ビルドで起動・動作確認",
+            "status": "done"
+          }
+        ]
+      },
+      {
+        "id": 36,
+        "title": "cinnabar カラーパレットの定義追加 (UX-013)",
+        "description": "tailwind.config.js に cinnabar カラーパレット（50〜900）を追加する。エラー状態・録画停止ボタン・バリデーションエラー等で10箇所以上使用されているが未定義のため、該当要素が無色でレンダリングされている。",
+        "details": "**影響箇所:**\n- `src/lib/components/ToastContainer.svelte`: error トーストの border/bg/text (cinnabar-200, cinnabar-50, cinnabar-900, cinnabar-100, cinnabar-700)\n- `src/routes/dashboard/+page.svelte`: 録画停止ボタン (cinnabar-600, cinnabar-500)、進捗バーグラデーション (to-cinnabar-500)\n- `src/routes/settings/+page.svelte`: バリデーションエラー表示 (cinnabar-700)\n- `src/routes/setup/+page.svelte`: ダウンロード進捗バー (to-cinnabar-500)\n- `src/routes/history/+page.svelte`: エラー表示\n- `src/routes/export/+page.svelte`: エラー表示\n\n**修正方針:**\n1. `tailwind.config.js` の `theme.extend.colors` に `cinnabar` オブジェクトを追加\n2. 朱色系（赤寄り暖色）で brass/ink と調和するトーンを設定\n3. 推奨パレット例:\n   ```\n   cinnabar: {\n     50: '#fef5f3', 100: '#fde8e0', 200: '#fbcfc5',\n     300: '#f7a89a', 400: '#f27566', 500: '#e84d35',\n     600: '#c73a24', 700: '#9f2e1e', 800: '#8a271a', 900: '#6d1f14'\n   }\n   ```\n4. 全画面で cinnabar クラスが正しくレンダリングされることを確認",
+        "testStrategy": "1. 設定画面でバリデーションエラーが赤色で表示されること\n2. ダッシュボードの録画停止ボタンが赤系で表示されること\n3. ToastContainer で error タイプのトーストが赤系背景で表示されること\n4. ダウンロード進捗バーのグラデーションが brass→cinnabar で表示されること",
+        "priority": "high",
+        "dependencies": [1],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "tailwind.config.js に cinnabar カラーパレット (50-900) を追加",
+            "status": "done"
+          },
+          {
+            "id": 2,
+            "title": "全画面で cinnabar クラスの表示確認（トースト・ボタン・バリデーション・進捗バー）",
+            "status": "done"
+          }
+        ]
+      },
+      {
+        "id": 37,
+        "title": "サイドバーのショートカットキー表記を Ctrl+Shift+K に修正 (UX-018)",
+        "description": "+layout.svelte のサイドバー下部にあるショートカット案内が Ctrl+Shift+R のままだが、タスク35で Ctrl+Shift+K に変更済み。表記を実態に合わせて修正する。",
+        "details": "**修正箇所:**\n- `src/routes/+layout.svelte` 117行目付近: `Ctrl+Shift+R` → `Ctrl+Shift+K` に変更\n\n**影響範囲:** フロントエンドのみ、1行の文字列変更",
+        "testStrategy": "サイドバー下部のショートカット案内が Ctrl+Shift+K と表示されていること",
+        "priority": "high",
+        "dependencies": [35],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 38,
+        "title": "ページ遷移アニメーションの追加 (UX-014)",
+        "description": "SvelteKit のルート切替時にフェードアニメーションを適用し、画面遷移を滑らかにする。業務ツールとしての速度感を損なわない軽い演出に留める。",
+        "details": "**修正方針:**\n1. `+layout.svelte` の `{@render children()}` を `{#key $page.url.pathname}` ブロックでラップ\n2. Svelte の `fade` トランジション（duration: 120-150ms）を適用\n3. セットアップ画面・メイン画面の両方で動作すること\n4. `prefers-reduced-motion: reduce` メディアクエリでアニメーションを無効化\n\n**注意点:**\n- `fly` は重すぎるので `fade` のみ推奨\n- duration は 150ms 以下に抑える（業務ツールなので素早さ優先）\n- レイアウトシフトを防ぐため `position: absolute` + `min-height` の考慮が必要",
+        "testStrategy": "1. ナビゲーション切替時にフェードアニメーションが表示されること\n2. 体感速度が遅くならないこと（150ms以下）\n3. prefers-reduced-motion 設定でアニメーションが無効になること",
+        "priority": "medium",
+        "dependencies": [1],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "+layout.svelte: children レンダリングを {#key} + fade トランジションでラップ",
             "status": "pending"
+          },
+          {
+            "id": 2,
+            "title": "prefers-reduced-motion メディアクエリ対応",
+            "status": "pending"
+          }
+        ]
+      },
+      {
+        "id": 39,
+        "title": "モーダルの Escape キー閉じ対応 (UX-015)",
+        "description": "ダッシュボードの記録停止確認モーダルが Escape キーで閉じられるようにする。",
+        "details": "**修正箇所:**\n- `src/routes/dashboard/+page.svelte`: stopConfirmOpen モーダルの div に `onkeydown` ハンドラを追加\n- Escape キー押下時に `stopConfirmOpen = false` を実行\n- モーダル表示時に自動フォーカス（`autofocus` または `use:action`）でキーイベントを受け取れるようにする\n- オプション: `<dialog>` 要素への置き換えでネイティブの Escape 対応を活用\n\n**影響範囲:** dashboard/+page.svelte のモーダル部分のみ",
+        "testStrategy": "1. 記録停止確認モーダルが表示された状態で Escape キーを押すとモーダルが閉じること\n2. キャンセルボタンも引き続き動作すること\n3. モーダル外のキーイベントに影響しないこと",
+        "priority": "medium",
+        "dependencies": [1],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 40,
+        "title": "ローディングスケルトンコンポーネントの作成 (UX-016)",
+        "description": "各画面のローディング状態を統一するスケルトンコンポーネントを作成する。パルスアニメーション付きのグレーブロックで、レイアウトシフトを防止する。",
+        "details": "**作成するコンポーネント:**\n`src/lib/components/Skeleton.svelte`\n\n**Props:**\n- `variant`: 'card' | 'list' | 'text' （表示パターン）\n- `lines`: number（text バリアントの行数、デフォルト3）\n- `count`: number（list/card バリアントの繰り返し数、デフォルト3）\n\n**スタイル:**\n- `animate-pulse` で緩やかな明滅\n- `bg-ink-100 rounded-2xl` でコンテンツプレースホルダー\n- 既存コンテンツと同じサイズ感でレイアウトシフトを防止\n\n**適用先:**\n- ダッシュボード: StatusCard × 3 のスケルトン\n- 履歴: 検索結果リストのスケルトン\n- プレビュー: レコードリスト・詳細ビューのスケルトン\n- エクスポート: プレビュー件数のスケルトン",
+        "testStrategy": "1. 各画面で初回読み込み時にスケルトンが表示されること\n2. データ読み込み完了後にスケルトンが消えてコンテンツに置き換わること\n3. スケルトン→コンテンツの切替でレイアウトシフトが発生しないこと",
+        "priority": "medium",
+        "dependencies": [1],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Skeleton.svelte コンポーネントの作成（card/list/text バリアント）",
+            "status": "pending"
+          },
+          {
+            "id": 2,
+            "title": "各画面（ダッシュボード・履歴・プレビュー・エクスポート）への適用",
+            "status": "pending"
+          }
+        ]
+      },
+      {
+        "id": 41,
+        "title": "再利用可能なボタン・バッジコンポーネントの作成 (UX-017)",
+        "description": "画面間でボタンのパディングやバッジのサイズが不統一なため、共通コンポーネントを作成して統一する。",
+        "details": "**作成するコンポーネント:**\n\n1. `src/lib/components/Button.svelte`\n   - Props: size ('sm' | 'md' | 'lg'), variant ('primary' | 'secondary' | 'danger'), disabled, loading\n   - primary: bg-ink-900 text-white hover:bg-ink-700\n   - secondary: border-ink-200 bg-white text-ink-700 hover:border-brass-300\n   - danger: bg-cinnabar-600 text-white hover:bg-cinnabar-500\n   - sm: px-3 py-2 text-xs, md: px-5 py-3 text-sm, lg: px-6 py-4 text-base\n   - loading 時: disabled + spinner or '...' suffix\n\n2. `src/lib/components/Badge.svelte`\n   - Props: tone ('brass' | 'ink' | 'cinnabar'), size ('sm' | 'md')\n   - sm: px-2 py-0.5 text-[10px], md: px-3 py-1 text-xs\n   - uppercase tracking-[0.2em] font-semibold\n\n**適用:**\n- 全画面のインラインボタンスタイルをコンポーネントに段階的に置き換え\n- 一度に全置換せず、画面単位で移行",
+        "testStrategy": "1. Button コンポーネントが全バリアント × 全サイズで正しく表示されること\n2. Badge コンポーネントが全トーン × 全サイズで正しく表示されること\n3. disabled/loading 状態が正しく動作すること\n4. 既存画面への適用後も動作が変わらないこと",
+        "priority": "medium",
+        "dependencies": [36],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Button.svelte の作成（primary/secondary/danger × sm/md/lg）",
+            "status": "pending"
+          },
+          {
+            "id": 2,
+            "title": "Badge.svelte の作成（brass/ink/cinnabar × sm/md）",
+            "status": "pending"
+          },
+          {
+            "id": 3,
+            "title": "ダッシュボード・設定画面への段階的適用",
+            "status": "pending"
+          }
+        ]
+      },
+      {
+        "id": 42,
+        "title": "キーボードショートカット一覧ヘルプの追加 (UX-019)",
+        "description": "アプリ全体のキーボードショートカットを一覧表示するモーダルを追加する。? キーまたはサイドバーのリンクから表示可能にする。",
+        "details": "**ショートカット一覧:**\n- Ctrl+Shift+K: 記録開始/停止\n- Ctrl+S: 設定保存（設定画面）/ 記述保存（プレビュー画面）\n- Escape: モーダルを閉じる\n- ?: ショートカット一覧を表示\n\n**実装方針:**\n1. `src/lib/components/ShortcutHelp.svelte` モーダルコンポーネントを作成\n2. `+layout.svelte` にグローバルな `onkeydown` ハンドラを追加（? キー検知）\n3. サイドバーのショートカットセクションに「一覧を表示」リンクを追加\n4. モーダルは Escape で閉じる（UX-015 と共通パターン）\n\n**デザイン:**\n- `<dialog>` 要素を使用\n- 各ショートカットを `<kbd>` タグで表示\n- ショートカット + 説明の2カラムレイアウト",
+        "testStrategy": "1. ? キーでモーダルが表示されること\n2. サイドバーリンクからもモーダルが表示されること\n3. Escape でモーダルが閉じること\n4. テキスト入力中は ? キーに反応しないこと（input/textarea フォーカス時は無視）",
+        "priority": "low",
+        "dependencies": [39],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 43,
+        "title": "全画面の「VLM」表記をユーザー向け表現に統一置換 (UX-020)",
+        "description": "UI 上に12箇所以上ある「VLM」表記を、経理担当者が理解できる表現に置き換える。Vision-Language Model の略称はユーザーにとって意味不明。",
+        "details": "**置換ルール（全画面共通）:**\n\n| 現在の表記 | 置換後 | 対象ファイル |\n|---|---|---|\n| VLM 処理済み | 説明文つき | dashboard, history, export |\n| VLM バッチ実行 | 説明文を一括生成 | dashboard |\n| VLM サーバー | 分析エンジン | dashboard, settings |\n| VLM 進捗 / VLM Progress | 生成進捗 | dashboard |\n| VLM 処理状況 | 説明文の生成状況 | +layout.svelte |\n| VLM 接続テスト | 接続を確認 | settings |\n| VLM ホスト | 分析エンジンのアドレス | settings |\n| VLM 最大トークン数 | 説明文の最大長 | settings |\n| VLM プロンプト最適化 | 生成プロンプトの調整 | settings |\n| VLM の記述 | 生成された説明文 | preview |\n| VLM 記述はまだ生成されていません | 説明文はまだ生成されていません | dashboard |\n| VLM 処理済みのみ | 説明文つきのみ | export |\n\n**注意:** Rust バックエンド側のコマンド名・イベント名・ログは変更しない（UI テキストのみ）",
+        "testStrategy": "1. 全画面を目視確認し「VLM」の表記が残っていないこと\n2. 各画面の機能が正常に動作すること（テキスト変更のみなので機能影響なし）\n3. ツールチップ・ヘルパーテキスト・トーストメッセージも含めて確認",
+        "priority": "high",
+        "dependencies": [1],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "+layout.svelte: サイドバー説明文の VLM 表記を置換",
+            "status": "done"
+          },
+          {
+            "id": 2,
+            "title": "dashboard/+page.svelte: ボタン・ステータス・進捗セクションの VLM 表記を置換",
+            "status": "done"
+          },
+          {
+            "id": 3,
+            "title": "settings/+page.svelte: ラベル・ヘルパーテキストの VLM 表記を置換",
+            "status": "done"
+          },
+          {
+            "id": 4,
+            "title": "export/+page.svelte, preview/+page.svelte, history/+page.svelte の VLM 表記を置換",
+            "status": "done"
+          }
+        ]
+      },
+      {
+        "id": 44,
+        "title": "セットアップ画面の技術用語・冗長表現の改善 (UX-021)",
+        "description": "セットアップ画面に含まれる Qwen, GGUF, mmproj, llama-server, 完了フラグ等の技術用語と、「非エンジニアでも」のような不要表現を平易な言葉に置き換える。",
+        "details": "**対象ファイル:** `src/routes/setup/+page.svelte`\n\n**変更一覧:**\n\n1. **説明文（142-143行目）:**\n   - 現在: 「モデルファイルの準備、テストキャプチャ、完了フラグの保存を順に進めます。非エンジニアでも使い始められるよう、必要な手順だけを 3 ステップでまとめています。」\n   - 変更: 「AI エンジンのダウンロード、動作確認、初期設定の 3 ステップで準備を進めます。」\n\n2. **モデル準備の説明（201行目）:**\n   - 現在: 「Qwen 系 GGUF モデルと `mmproj` を `models/` に配置します。すでに存在する場合は再ダウンロードしません。」\n   - 変更: 「画面を読み取る AI エンジンをダウンロードします。ダウンロード済みなら再取得しません。」\n\n3. **llama-server ラベル（155行目）:**\n   - 現在: 「llama-server」\n   - 変更: 「分析エンジン」\n\n4. **mmproj ラベル（293行目）:**\n   - 現在: 「mmproj:」\n   - 変更: 「画像認識モジュール:」\n\n5. **完了画面の説明（289行目）:**\n   - 現在: 「ここで完了フラグを保存すると、次回起動時から通常のダッシュボードへ直接入ります。」\n   - 変更: 「完了すると、次回からダッシュボードに直接入ります。」\n\n6. **ステップラベル（170-174行目）:**\n   - 「1. モデル準備」→「1. ダウンロード準備」\n   - 「2. ダウンロード進捗」→「2. ダウンロード中」\n   - 「3. テストキャプチャ」→「3. 動作確認」\n   - 「4. 完了」→ そのまま\n\n7. **英語ラベル:**\n   - 「Setup Wizard」→「セットアップ」\n   - 「Current Status」→「現在の状態」\n   - 「Steps」→「手順」\n   - 「Welcome」→「ようこそ」\n   - 「Download」→「ダウンロード」\n   - 「Test Capture」→「動作確認」\n   - 「Complete」→「完了」",
+        "testStrategy": "1. セットアップ画面の全ステップを通して、技術用語が露出していないこと\n2. 各ステップの遷移が正常に動作すること\n3. モデルダウンロード・テストキャプチャの機能が正常であること",
+        "priority": "high",
+        "dependencies": [1],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "説明文・ヘルパーテキストから技術用語（Qwen, GGUF, mmproj, 完了フラグ, 非エンジニア）を除去",
+            "status": "done"
+          },
+          {
+            "id": 2,
+            "title": "英語ラベル（Setup Wizard, Current Status, Steps 等）を日本語に置換",
+            "status": "done"
+          },
+          {
+            "id": 3,
+            "title": "llama-server ラベルを「分析エンジン」に変更",
+            "status": "done"
+          }
+        ]
+      },
+      {
+        "id": 45,
+        "title": "設定画面の技術用語をユーザー向けラベルに変更 (UX-022)",
+        "description": "設定画面の「差分閾値」「sidecar JSON」「config.json に永続化」「window_title と description」等の開発者向け表現をユーザーが理解できるラベルに変更する。",
+        "details": "**対象ファイル:** `src/routes/settings/+page.svelte`\n\n**変更一覧:**\n\n| 現在の表記 | 置換後 |\n|---|---|\n| 差分閾値 | 画面変化の検出感度 |\n| 高いほど小さな画面変化を無視しやすくなります | 高いほど微細な変化を無視します |\n| VLM 処理後に画像と sidecar JSON を削除し、CSV にはテキストだけを残します | 分析後に画像と関連データを削除し、CSV にはテキストだけを残します |\n| 保存時は `config.json` に永続化され、記録中なら新しい設定で録画ループを再起動します | 保存すると即座に反映されます。記録中の場合は新しい設定で記録を再開します |\n| `window_title` と `description` | ウィンドウタイトルと説明文 |\n\n**追加対象ファイル:**\n- `src/routes/export/+page.svelte`:\n  - 「UTF-8 BOM 付きで出力され」→「Excel 対応形式で出力され」\n  - 「記述が付与されたレコードだけに絞り込みます」→「説明文がついた記録だけに絞り込みます」\n- `src/routes/preview/+page.svelte`:\n  - 「履歴テーブルへ追記」→「編集履歴に記録されます」\n  - 「画面記述の粒度や表現を調整できます」→ そのまま（十分に平易）",
+        "testStrategy": "1. 設定画面の全ラベルが技術用語を含まないこと\n2. 設定の保存・読み込み・バリデーションが正常に動作すること\n3. エクスポート・プレビュー画面のテキストも確認",
+        "priority": "medium",
+        "dependencies": [43],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "settings/+page.svelte: 差分閾値、sidecar JSON、config.json 等のラベル変更",
+            "status": "done"
+          },
+          {
+            "id": 2,
+            "title": "export/+page.svelte: UTF-8 BOM、レコード等の表現変更",
+            "status": "done"
+          },
+          {
+            "id": 3,
+            "title": "preview/+page.svelte: 履歴テーブル等の表現変更",
+            "status": "done"
+          }
+        ]
+      },
+      {
+        "id": 46,
+        "title": "破壊的アクションの配色を cinnabar に統一 (UX-023)",
+        "description": "破壊的アクション（削除・停止・破棄）の色が rose と cinnabar に分裂しているため、cinnabar 系に統一する。",
+        "details": "**現状:**\n- 「記録停止」ボタン → cinnabar-600（赤系）\n- 「停止する」確認ボタン → cinnabar-600（赤系）\n- マスキングルール「削除」ボタン → rose-50/rose-200/rose-700（ピンク系、未定義）\n\n**修正方針:**\n1. タスク36（cinnabar パレット定義）が完了済みであること\n2. `src/routes/settings/+page.svelte` の「削除」ボタン:\n   - `bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100`\n   - → `bg-cinnabar-50 border-cinnabar-200 text-cinnabar-700 hover:bg-cinnabar-100`\n3. rose カラーの参照が他に残っていないことを確認\n\n**影響範囲:** settings/+page.svelte の1箇所のみ",
+        "testStrategy": "1. 設定画面のマスキングルール「削除」ボタンが cinnabar 系の赤色で表示されること\n2. ダッシュボードの「記録停止」ボタンと色調が統一されていること\n3. 全画面で rose-* クラスの使用がないことを grep で確認",
+        "priority": "medium",
+        "dependencies": [36],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 47,
+        "title": "英語混在テキストの日本語化 (UX-024)",
+        "description": "ステータスバッジ（processed, pending, queued 等）やセクションラベル（Live Monitor, Recent Frames 等）の英語表記を日本語に統一する。",
+        "details": "**対象ファイル・変更一覧:**\n\n**ステータスバッジ:**\n- `dashboard/+page.svelte`: processed → 処理済み、queued → 待機中\n- `preview/+page.svelte`: processed → 処理済み、queued → 待機中\n- `history/+page.svelte`: processed → 処理済み、pending → 待機中\n- `preview/+page.svelte`: available → 表示可、removed → 削除済み\n- `+layout.svelte`: live → 有効\n\n**セクションラベル（ダッシュボード）:**\n- Live Monitor → リアルタイム\n- Recent Frames → 最新の記録\n- VLM Progress → 生成進捗（タスク43と同時対応可）\n\n**セクションラベル（エクスポート）:**\n- Preview Count → 出力件数\n\n**セクションラベル（プレビュー）:**\n- Before → 変更前\n- After → 変更後\n\n**セクションラベル（設定）:**\n- Task 21 バッジ → 削除（ユーザーに無関係な内部タスク番号）\n\n**注意:** nav の status は表示用テキストのみ変更。内部のステータス値（Rust 側の enum）は変更しない",
+        "testStrategy": "1. 全画面を目視確認し、ユーザー向けテキストに英語が混在していないこと\n2. ステータスバッジの表示が日本語になっていること\n3. 機能的な動作に影響がないこと",
+        "priority": "medium",
+        "dependencies": [1],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "dashboard/+page.svelte: Live Monitor, Recent Frames, processed/queued バッジを日本語化",
+            "status": "done"
+          },
+          {
+            "id": 2,
+            "title": "preview/+page.svelte: Before/After, processed/queued/available/removed を日本語化",
+            "status": "done"
+          },
+          {
+            "id": 3,
+            "title": "history/+page.svelte, export/+page.svelte, +layout.svelte のバッジ・ラベルを日本語化",
+            "status": "done"
+          },
+          {
+            "id": 4,
+            "title": "settings/+page.svelte: Task 21 バッジの削除",
+            "status": "done"
           }
         ]
       }
     ],
     "metadata": {
       "created": "2026-03-30T12:24:28.400Z",
-      "updated": "2026-03-31T15:10:00+09:00",
+      "updated": "2026-03-31T16:30:00+09:00",
       "description": "Tasks for master context"
     }
   }

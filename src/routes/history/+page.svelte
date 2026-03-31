@@ -194,7 +194,7 @@
     <div class="grid gap-6 px-6 py-6 lg:grid-cols-[1.1fr_0.9fr] lg:px-8">
       <div class="space-y-4">
         <div class="inline-flex items-center rounded-full border border-brass-200 bg-brass-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-brass-700">
-          History
+          履歴
         </div>
         <h2 class="text-3xl font-bold text-ink-900">履歴と検索</h2>
         <p class="max-w-2xl text-sm leading-7 text-ink-500 sm:text-base">
@@ -203,9 +203,9 @@
       </div>
 
       <div class="rounded-[1.75rem] border border-ink-100 bg-ink-900 px-5 py-5 text-white">
-        <p class="text-xs font-semibold uppercase tracking-[0.24em] text-white/60">Search Notes</p>
+        <p class="text-xs font-semibold uppercase tracking-[0.24em] text-white/60">検索のヒント</p>
         <div class="mt-4 space-y-3 text-sm leading-6 text-white/80">
-          <p>検索対象は `window_title`、`description`、`app` です。</p>
+          <p>ウィンドウタイトル、説明文、アプリ名が検索対象です。</p>
           <p>検索結果は新しい記録から順に 50 件ずつ表示します。</p>
           <p>条件未指定なら全件を対象にします。</p>
         </div>
@@ -217,7 +217,7 @@
     <article class="rounded-[1.75rem] border border-white/70 bg-white/80 p-6 shadow-panel backdrop-blur">
       <div class="flex items-start justify-between gap-4">
         <div>
-          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">Filters</p>
+          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">絞り込み</p>
           <h3 class="mt-2 text-2xl font-bold text-ink-900">検索条件</h3>
         </div>
         <div class="flex flex-wrap justify-end gap-2">
@@ -357,7 +357,7 @@
     <article class="rounded-[1.75rem] border border-white/70 bg-white/80 p-6 shadow-panel backdrop-blur">
       <div class="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">Results</p>
+          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">結果</p>
           <h3 class="mt-2 text-2xl font-bold text-ink-900">検索結果</h3>
         </div>
         <div class="text-right text-sm text-ink-500">
@@ -394,7 +394,7 @@
                         : "bg-ink-100 text-ink-500"
                     }`}
                   >
-                    {record.vlm_processed ? "processed" : "pending"}
+                    {record.vlm_processed ? "処理済み" : "待機中"}
                   </span>
                 </div>
                 <span class="text-xs text-ink-400">{formatDateTime(record.timestamp)}</span>

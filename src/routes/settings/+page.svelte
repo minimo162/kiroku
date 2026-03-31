@@ -124,7 +124,7 @@
     saving = true;
     try {
       config = await invoke<AppConfig>("save_config_command", { config });
-      addToast("success", "設定を保存しました。記録中だった場合は新しい設定で再開しています。");
+      addToast("success", "設定を保存しました。記録中の場合は新しい設定で再開します。");
     } catch (error) {
       addToast("error", error instanceof Error ? error.message : String(error));
     } finally {
@@ -168,8 +168,8 @@
       addToast(
         ok ? "success" : "info",
         ok
-          ? "VLM サーバーへの接続に成功しました。"
-          : "VLM サーバーは応答しましたが、正常ステータスではありません。"
+          ? "分析エンジンへの接続に成功しました。"
+          : "分析エンジンは応答しましたが、正常ステータスではありません。"
       );
     } catch (error) {
       addToast("error", error instanceof Error ? error.message : String(error));
@@ -261,22 +261,22 @@
     <div class="grid gap-6 px-6 py-6 lg:grid-cols-[1.1fr_0.9fr] lg:px-8">
       <div class="space-y-4">
         <div class="inline-flex items-center rounded-full border border-brass-200 bg-brass-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-brass-700">
-          Settings
+          設定
         </div>
-        <h2 class="text-3xl font-bold text-ink-900">記録と VLM の設定</h2>
+        <h2 class="text-3xl font-bold text-ink-900">記録と分析の設定</h2>
         <p class="max-w-2xl text-sm leading-7 text-ink-500 sm:text-base">
-          キャプチャ間隔、差分閾値、VLM 接続先、バッチ実行時刻、保存先ディレクトリを管理します。
-          保存時は `config.json` に永続化され、記録中なら新しい設定で録画ループを再起動します。
+          キャプチャ間隔、画面変化の検出感度、分析エンジンの接続先、一括生成の実行時刻、保存先を管理します。
+          保存すると即座に反映されます。記録中の場合は新しい設定で記録を再開します。
         </p>
       </div>
 
       <div class="rounded-[1.75rem] border border-ink-100 bg-ink-900 px-5 py-5 text-white">
-        <p class="text-xs font-semibold uppercase tracking-[0.24em] text-white/60">Quick Notes</p>
+        <p class="text-xs font-semibold uppercase tracking-[0.24em] text-white/60">設定のヒント</p>
         <div class="mt-4 space-y-3 text-sm leading-6 text-white/80">
           <p>キャプチャ間隔は 10 秒から 300 秒の範囲で調整できます。</p>
-          <p>差分閾値を上げるほど、近い画面変化をスキップしやすくなります。</p>
-          <p>夜間バッチを有効にすると、指定時刻に未処理フレームを自動処理します。</p>
-          <p>保存先ディレクトリはキャプチャ画像と sidecar JSON の出力先です。</p>
+          <p>検出感度を上げるほど、近い画面変化をスキップしやすくなります。</p>
+          <p>夜間バッチを有効にすると、指定時刻に未処理フレームの説明文を自動生成します。</p>
+          <p>保存先ディレクトリはキャプチャ画像と関連データの出力先です。</p>
         </div>
       </div>
     </div>
@@ -286,7 +286,7 @@
     <article class="rounded-[1.75rem] border border-white/70 bg-white/80 p-6 shadow-panel backdrop-blur">
       <div class="flex items-center justify-between gap-4">
         <div>
-          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">Capture Settings</p>
+          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">キャプチャ設定</p>
           <h3 class="mt-2 text-2xl font-bold text-ink-900">キャプチャ設定</h3>
         </div>
         {#if loading}
@@ -313,7 +313,7 @@
 
         <div>
           <div class="flex items-center justify-between gap-3">
-            <label class="text-sm font-medium text-ink-700" for="dhash-threshold">差分閾値</label>
+            <label class="text-sm font-medium text-ink-700" for="dhash-threshold">画面変化の検出感度</label>
             <span class="text-sm font-semibold text-brass-700">{config.dhash_threshold}</span>
           </div>
           <input
@@ -325,7 +325,7 @@
             step="1"
             bind:value={config.dhash_threshold}
           />
-          <p class="mt-2 text-sm text-ink-500">高いほど小さな画面変化を無視しやすくなります。</p>
+          <p class="mt-2 text-sm text-ink-500">高いほど微細な変化を無視します。</p>
         </div>
 
         <label class="flex items-center justify-between rounded-[1.75rem] border border-brass-200 bg-brass-50/80 px-4 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]">
@@ -335,7 +335,7 @@
               <span class="rounded-full bg-ink-900 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-white">推奨</span>
             </div>
             <p class="mt-2 text-sm text-ink-600">
-              VLM 処理後に画像と sidecar JSON を削除し、CSV にはテキストだけを残します。
+              分析後に画像と関連データを削除し、CSV にはテキストだけを残します。
             </p>
           </div>
           <input class="h-5 w-5 accent-brass-600" type="checkbox" bind:checked={config.auto_delete_images} />
@@ -345,7 +345,7 @@
           <div>
             <p class="text-sm font-medium text-ink-700">夜間バッチを有効化</p>
             <p class="mt-1 text-sm text-ink-500">
-              指定時刻になると、未処理の記録を自動で VLM バッチ処理します。
+              指定時刻になると、未処理の記録から説明文を自動生成します。
             </p>
           </div>
           <input class="h-5 w-5 accent-brass-600" type="checkbox" bind:checked={config.scheduler_enabled} />
@@ -365,12 +365,12 @@
     </article>
 
     <article class="rounded-[1.75rem] border border-white/70 bg-white/80 p-6 shadow-panel backdrop-blur">
-      <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">VLM & Storage</p>
-      <h3 class="mt-2 text-2xl font-bold text-ink-900">VLM 接続と保存先</h3>
+      <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">分析エンジンと保存先</p>
+      <h3 class="mt-2 text-2xl font-bold text-ink-900">接続先と保存先</h3>
 
       <div class="mt-6 space-y-5">
         <div>
-          <label class="text-sm font-medium text-ink-700" for="vlm-host">VLM ホスト</label>
+          <label class="text-sm font-medium text-ink-700" for="vlm-host">分析エンジンのアドレス</label>
           <input
             id="vlm-host"
             class="mt-3 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300"
@@ -386,7 +386,7 @@
         </div>
 
         <div>
-          <label class="text-sm font-medium text-ink-700" for="vlm-max-tokens">VLM 最大トークン数</label>
+          <label class="text-sm font-medium text-ink-700" for="vlm-max-tokens">説明文の最大長</label>
           <input
             id="vlm-max-tokens"
             class="mt-3 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300"
@@ -426,14 +426,11 @@
         <div class="rounded-[1.5rem] border border-ink-100 bg-ink-50/70 px-4 py-4">
           <div class="flex items-start justify-between gap-4">
             <div>
-              <p class="text-sm font-medium text-ink-700">VLM プロンプト最適化</p>
+              <p class="text-sm font-medium text-ink-700">生成プロンプトの調整</p>
               <p class="mt-1 text-sm leading-6 text-ink-500">
-                経理業務向けの既定プロンプトをベースに、画面記述の粒度や表現を調整できます。
+                経理業務向けの既定プロンプトをベースに、説明文の粒度や表現を調整できます。
               </p>
             </div>
-            <span class="rounded-full bg-brass-100 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-brass-700">
-              Task 21
-            </span>
           </div>
 
           <div class="mt-5 space-y-4">
@@ -506,7 +503,7 @@
                         })}
                     />
                     <button
-                      class="rounded-full border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 transition hover:border-rose-300"
+                      class="rounded-full border border-cinnabar-200 bg-cinnabar-50 px-4 py-3 text-sm font-semibold text-cinnabar-700 transition hover:bg-cinnabar-100"
                       type="button"
                       onclick={() => removeMaskRule(index)}
                     >
@@ -562,7 +559,7 @@
               onclick={testConnection}
               disabled={!tauriAvailable || testing}
             >
-              {testing ? "確認中..." : "VLM 接続テスト"}
+              {testing ? "確認中..." : "接続を確認"}
             </button>
           </div>
           <p class="mt-4 text-sm leading-6 text-ink-500">`Ctrl+S` でも設定を保存できます。</p>

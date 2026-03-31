@@ -150,7 +150,7 @@
     if (!canRestoreOriginal()) return;
 
     editingDescription = originalDescription;
-    await saveDescription("VLM の元の記述に戻しました。");
+    await saveDescription("元の説明文に戻しました。");
   }
 
   function handleEditorKeydown(event: KeyboardEvent) {
@@ -182,21 +182,21 @@
     <div class="grid gap-6 px-6 py-6 lg:grid-cols-[1.1fr_0.9fr] lg:px-8">
       <div class="space-y-4">
         <div class="inline-flex items-center rounded-full border border-brass-200 bg-brass-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-brass-700">
-          Preview
+          プレビュー
         </div>
         <h2 class="text-3xl font-bold text-ink-900">スクリーンショットと記述の確認</h2>
         <p class="max-w-2xl text-sm leading-7 text-ink-500 sm:text-base">
-          日付ごとにキャプチャを確認し、VLM の記述をその場で修正できます。
-          画像が削除済みでも説明文と編集履歴は DB から追跡できます。
+          日付ごとにキャプチャを確認し、生成された説明文をその場で修正できます。
+          画像が削除済みでも説明文と編集履歴は確認できます。
         </p>
       </div>
 
       <div class="rounded-[1.75rem] border border-ink-100 bg-ink-900 px-5 py-5 text-white">
-        <p class="text-xs font-semibold uppercase tracking-[0.24em] text-white/60">Controls</p>
+        <p class="text-xs font-semibold uppercase tracking-[0.24em] text-white/60">操作ガイド</p>
         <div class="mt-4 space-y-3 text-sm leading-6 text-white/80">
           <p>1ページあたり 50 件まで表示します。</p>
           <p>画像が残っている場合は右側にプレビューを表示します。</p>
-          <p>保存時は変更前後の記述を履歴テーブルへ追記します。</p>
+          <p>保存すると変更前後の内容が編集履歴に記録されます。</p>
         </div>
       </div>
     </div>
@@ -206,7 +206,7 @@
     <article class="rounded-[1.75rem] border border-white/70 bg-white/80 p-5 shadow-panel backdrop-blur">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">Record List</p>
+          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">記録一覧</p>
           <h3 class="mt-2 text-2xl font-bold text-ink-900">記録一覧</h3>
         </div>
         <div class="min-w-[180px]">
@@ -277,7 +277,7 @@
                       : "bg-ink-100 text-ink-500"
                   }`}
                 >
-                  {record.vlm_processed ? "processed" : "queued"}
+                  {record.vlm_processed ? "処理済み" : "待機中"}
                 </span>
               </div>
             </button>
@@ -309,16 +309,16 @@
           <div class="space-y-4">
             <div class="flex items-center justify-between gap-3">
               <div>
-                <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">Screenshot</p>
+                <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">スクリーンショット</p>
                 <h3 class="mt-2 text-2xl font-bold text-ink-900">画像プレビュー</h3>
               </div>
               {#if selectedRecord()?.image_exists}
                 <span class="rounded-full bg-brass-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-brass-700">
-                  available
+                  表示可
                 </span>
               {:else}
                 <span class="rounded-full bg-ink-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-ink-500">
-                  removed
+                  削除済み
                 </span>
               {/if}
             </div>
@@ -347,7 +347,7 @@
           <div class="space-y-4">
             <div class="flex items-center justify-between gap-3">
               <div>
-                <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">Description</p>
+                <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">説明文</p>
                 <h3 class="mt-2 text-2xl font-bold text-ink-900">記述の編集</h3>
               </div>
               <div class="flex flex-wrap items-center justify-end gap-2">
@@ -382,7 +382,7 @@
             <div class="rounded-[1.5rem] border border-ink-100 bg-ink-50/70 px-4 py-4">
               <div class="flex items-center justify-between gap-3">
                 <div>
-                  <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">History</p>
+                  <p class="text-sm font-semibold uppercase tracking-[0.24em] text-ink-400">編集履歴</p>
                   <h4 class="mt-2 text-lg font-bold text-ink-900">編集履歴</h4>
                 </div>
                 {#if historyLoading}
@@ -403,13 +403,13 @@
                       </p>
                       <div class="mt-3 grid gap-3 md:grid-cols-2">
                         <div>
-                          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-ink-400">Before</p>
+                          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-ink-400">変更前</p>
                           <p class="mt-2 text-sm leading-6 text-ink-600">
                             {entry.previous_description ?? "未設定"}
                           </p>
                         </div>
                         <div>
-                          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-ink-400">After</p>
+                          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-ink-400">変更後</p>
                           <p class="mt-2 text-sm leading-6 text-ink-600">
                             {entry.new_description ?? "未設定"}
                           </p>
