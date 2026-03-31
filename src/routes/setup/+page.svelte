@@ -30,9 +30,19 @@
   let message = $state<string | null>(null);
   let testCaptureMessage = $state<string | null>(null);
   let tauriAvailable = $state(false);
+  let showChecksumDialog = $state(false);
+  let checksumFailedFile = $state("");
 
   const isTauri = () =>
     typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+  function formatDownloadError(error: unknown) {
+    const text = error instanceof Error ? error.message : String(error);
+    if (text.includes("checksum verification failed")) {
+      return "ファイルの整合性チェックに失敗しました。社内プロキシやネットワーク環境が原因の可能性があります。";
+    }
+    return text;
+  }
 
   async function loadStatus() {
     if (!isTauri()) {
@@ -57,12 +67,31 @@
     message = null;
     currentStep = "model-download";
     try {
-      await invoke<ModelDownloadResult>("download_model");
+      await invoke<ModelDownloadResult>("download_model", { skipChecksum: false });
       await loadStatus();
       currentStep = "test-capture";
       message = "モデルファイルの準備が完了しました。";
     } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
+      message = formatDownloadError(error);
+    } finally {
+      downloading = false;
+    }
+  }
+
+  async function retryWithSkipChecksum() {
+    if (!isTauri()) return;
+
+    showChecksumDialog = false;
+    downloading = true;
+    message = null;
+    currentStep = "model-download";
+    try {
+      await invoke<ModelDownloadResult>("download_model", { skipChecksum: true });
+      await loadStatus();
+      currentStep = "test-capture";
+      message = "モデルファイルの準備が完了しました。";
+    } catch (error) {
+      message = formatDownloadError(error);
     } finally {
       downloading = false;
     }
@@ -109,19 +138,28 @@
     }
 
     let disposed = false;
-    let unlisten: (() => void) | undefined;
+    let progressUnlisten: (() => void) | undefined;
+    let checksumUnlisten: (() => void) | undefined;
 
     void (async () => {
-      unlisten = await listen<ModelDownloadProgress>("model-download-progress", (event) => {
+      progressUnlisten = await listen<ModelDownloadProgress>("model-download-progress", (event) => {
         if (!disposed) {
           downloadProgress = event.payload;
+        }
+      });
+
+      checksumUnlisten = await listen<string>("checksum-retry-exhausted", (event) => {
+        if (!disposed) {
+          checksumFailedFile = event.payload;
+          showChecksumDialog = true;
         }
       });
     })();
 
     return () => {
       disposed = true;
-      unlisten?.();
+      progressUnlisten?.();
+      checksumUnlisten?.();
     };
   });
 </script>
@@ -313,3 +351,30 @@
     </article>
   </div>
 </section>
+
+{#if showChecksumDialog}
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <div class="mx-4 max-w-md rounded-xl bg-white p-6 shadow-2xl">
+      <h3 class="text-lg font-semibold text-ink-900">整合性チェック失敗</h3>
+      <p class="mt-2 text-sm text-ink-600">
+        「{checksumFailedFile}」のファイル整合性チェックに失敗しました。社内プロキシやネットワーク環境が原因の可能性があります。検証をスキップしてダウンロードを完了しますか？
+      </p>
+      <div class="mt-4 flex justify-end gap-3">
+        <button
+          class="rounded-lg border border-ink-200 px-4 py-2 text-sm text-ink-700 hover:bg-ink-50"
+          onclick={() => {
+            showChecksumDialog = false;
+          }}
+        >
+          キャンセル
+        </button>
+        <button
+          class="rounded-lg bg-brass-600 px-4 py-2 text-sm text-white hover:bg-brass-500"
+          onclick={retryWithSkipChecksum}
+        >
+          スキップして続行
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}

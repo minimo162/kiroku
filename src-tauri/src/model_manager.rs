@@ -11,8 +11,7 @@ use crate::{
     config::save_config, models::AppConfig, state::AppState, vlm::server::resolve_model_paths,
 };
 
-const MODEL_REPO_BASE: &str =
-    "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main";
+const MODEL_REPO_BASE: &str = "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main";
 const DEFAULT_MODEL_FILE_NAME: &str = "Qwen3.5-0.8B-UD-Q6_K_XL.gguf";
 const DEFAULT_MMPROJ_FILE_NAME: &str = "mmproj-BF16.gguf";
 const MODEL_PROGRESS_EVENT: &str = "model-download-progress";
@@ -52,8 +51,14 @@ pub enum ModelManagerError {
     Io(#[from] io::Error),
     #[error("failed to download model file")]
     Http(#[from] reqwest::Error),
-    #[error("checksum verification failed for {file_name}")]
-    ChecksumMismatch { file_name: String },
+    #[error(
+        "checksum verification failed for {file_name} (expected: {expected}, actual: {actual})"
+    )]
+    ChecksumMismatch {
+        file_name: String,
+        expected: String,
+        actual: String,
+    },
     #[error("setup cannot complete until both model files are ready")]
     SetupIncomplete,
     #[error("failed to persist config")]
@@ -86,13 +91,35 @@ pub async fn get_setup_status(state: State<'_, AppState>) -> Result<SetupStatus,
 pub async fn download_model(
     app: AppHandle,
     state: State<'_, AppState>,
+    skip_checksum: Option<bool>,
 ) -> Result<ModelDownloadResult, String> {
+    let skip = skip_checksum.unwrap_or(false);
     let models_dir = state.app_paths.data_dir.join("models");
     fs::create_dir_all(&models_dir).map_err(|error| error.to_string())?;
     let client = build_download_client().map_err(|error| error.to_string())?;
 
     for artifact in MODEL_ARTIFACTS {
         let destination = models_dir.join(artifact.file_name);
+        let url = model_url_for(&artifact);
+
+        if destination.exists() {
+            if let Ok(head_resp) = client.head(&url).send().await {
+                if let Some(expected_size) = content_length(head_resp.headers()) {
+                    if let Ok(metadata) = std::fs::metadata(&destination) {
+                        if metadata.len() != expected_size {
+                            eprintln!(
+                                "file size mismatch for {}: expected={}, actual={}",
+                                artifact.file_name,
+                                expected_size,
+                                metadata.len()
+                            );
+                            let _ = std::fs::remove_file(&destination);
+                        }
+                    }
+                }
+            }
+        }
+
         if destination.exists() {
             emit_progress(
                 &app,
@@ -109,10 +136,53 @@ pub async fn download_model(
             continue;
         }
 
-        let url = model_url_for(&artifact);
-        download_artifact(&client, &app, artifact.file_name, &url, &destination)
-            .await
-            .map_err(|error| error.to_string())?;
+        let max_attempts = 3;
+        let mut last_error = None;
+
+        for attempt in 1..=max_attempts {
+            match download_artifact(&client, &app, artifact.file_name, &url, &destination, skip)
+                .await
+            {
+                Ok(()) => {
+                    last_error = None;
+                    break;
+                }
+                Err(e) => {
+                    if matches!(&e, ModelManagerError::ChecksumMismatch { .. })
+                        && attempt < max_attempts
+                    {
+                        eprintln!(
+                            "checksum mismatch attempt {attempt}/{max_attempts}, retrying in 2s..."
+                        );
+                        emit_progress(
+                            &app,
+                            ModelDownloadProgress {
+                                step: "retrying".to_string(),
+                                file_name: artifact.file_name.to_string(),
+                                percent: 0.0,
+                                downloaded_bytes: 0,
+                                total_bytes: None,
+                                speed: format!("再試行中...（{}/{}）", attempt + 1, max_attempts),
+                                remaining: "".to_string(),
+                            },
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        last_error = Some(e);
+                    } else if matches!(&e, ModelManagerError::ChecksumMismatch { .. })
+                        && attempt == max_attempts
+                    {
+                        let _ = app.emit("checksum-retry-exhausted", artifact.file_name);
+                        last_error = Some(e);
+                    } else {
+                        return Err(e.to_string());
+                    }
+                }
+            }
+        }
+
+        if let Some(e) = last_error {
+            return Err(e.to_string());
+        }
     }
 
     let (model_path, mmproj_path) = resolve_model_paths(&state.app_paths)
@@ -178,6 +248,7 @@ async fn download_artifact(
     file_name: &str,
     url: &str,
     destination: &Path,
+    skip_checksum: bool,
 ) -> Result<(), ModelManagerError> {
     let response = client.get(url).send().await?.error_for_status()?;
     let total_bytes = content_length(response.headers());
@@ -218,10 +289,15 @@ async fn download_artifact(
 
     let actual_hash = format!("{:x}", hasher.finalize());
     if let Some(expected_hash) = expected_hash {
-        if actual_hash != expected_hash {
+        if !skip_checksum && actual_hash != expected_hash {
+            eprintln!(
+                "checksum mismatch for {file_name}: expected={expected_hash}, actual={actual_hash}"
+            );
             let _ = tokio::fs::remove_file(&tmp_path).await;
             return Err(ModelManagerError::ChecksumMismatch {
                 file_name: file_name.to_string(),
+                expected: expected_hash,
+                actual: actual_hash,
             });
         }
     }

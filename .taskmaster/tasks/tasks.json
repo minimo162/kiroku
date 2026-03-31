@@ -804,10 +804,53 @@
           }
         ]
       }
+      ,
+      {
+        "id": 48,
+        "title": "モデルダウンロードのチェックサム検証失敗への対策 (DL-001〜DL-005)",
+        "description": "HuggingFace からのモデルダウンロード時に checksum verification failed エラーが発生する問題を修正する。企業プロキシ環境やネットワーク不安定時でもダウンロードが完了できるようにする。",
+        "details": "**現状の問題:**\n`model_manager.rs` の `download_artifact()` が HuggingFace の `x-linked-etag` ヘッダーから取得した SHA256 と、ダウンロード中に計算した SHA256 を比較している。しかし以下の理由で不一致が発生する:\n- 企業プロキシ（Zscaler）の TLS インスペクションがレスポンスボディを変質させる\n- HuggingFace の etag が Git LFS OID であり、HTTP レスポンスボディの SHA256 と異なる場合がある\n- ネットワーク断による部分ダウンロード\n\n**修正方針:**\n\n1. **ログ改善 (DL-001)**:\n   - `ChecksumMismatch` エラー時に expected/actual のハッシュ値を `eprintln!` でログ出力\n   - フロントエンドに送るエラーメッセージにもハッシュ値を含める\n\n2. **自動リトライ (DL-002)**:\n   - `download_artifact()` をリトライラッパーで囲む（最大2回リトライ、計3回試行）\n   - リトライ間に 2秒の待機を入れる\n   - `.download` 一時ファイルは失敗時に毎回削除済み（既存実装）\n\n3. **チェックサムスキップオプション (DL-003)**:\n   - `download_artifact()` に `skip_checksum: bool` パラメータを追加\n   - リトライが全て失敗した場合、フロントエンドに `checksum-retry-exhausted` イベントを emit\n   - セットアップ画面にダイアログを追加:「検証をスキップしてダウンロードを完了しますか？」\n   - `download_model` コマンドに `skip_checksum` 引数を追加\n\n4. **エラーメッセージ改善 (DL-004)**:\n   - セットアップ画面のエラー表示を改善\n   - 「ファイルの整合性チェックに失敗しました。社内プロキシやネットワーク環境が原因の可能性があります。」\n   - リトライ中は「再試行中...（N/3）」を進捗表示\n\n5. **部分ダウンロード検出 (DL-005)**:\n   - `destination.exists()` チェック時に Content-Length（HEAD リクエスト）とファイルサイズを比較\n   - サイズ不一致なら既存ファイルを削除して再ダウンロード",
+        "testStrategy": "1. 正常系: チェックサムが一致する場合にダウンロードが成功すること\n2. リトライ: チェックサム不一致時に自動リトライされ、ログにハッシュ値が出力されること\n3. スキップ: リトライ上限後にフロントエンドにイベントが送信され、スキップオプションで完了できること\n4. 部分ダウンロード: サイズ不一致の既存ファイルが再ダウンロードされること\n5. 正常キャッシュ: サイズ一致の既存ファイルはスキップされること",
+        "priority": "high",
+        "dependencies": [34],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "ChecksumMismatch エラーに expected/actual ハッシュ値のログ出力を追加",
+            "status": "pending"
+          },
+          {
+            "id": 2,
+            "title": "download_artifact() にリトライロジックを追加（最大2回、2秒間隔）",
+            "status": "pending"
+          },
+          {
+            "id": 3,
+            "title": "download_model コマンドに skip_checksum パラメータを追加",
+            "status": "pending"
+          },
+          {
+            "id": 4,
+            "title": "セットアップ画面にチェックサムスキップ確認ダイアログを追加",
+            "status": "pending"
+          },
+          {
+            "id": 5,
+            "title": "セットアップ画面のエラーメッセージを改善（プロキシ環境への言及）",
+            "status": "pending"
+          },
+          {
+            "id": 6,
+            "title": "既存ファイルのサイズ検証を追加（部分ダウンロード検出）",
+            "status": "pending"
+          }
+        ]
+      }
     ],
     "metadata": {
       "created": "2026-03-30T12:24:28.400Z",
-      "updated": "2026-03-31T16:30:00+09:00",
+      "updated": "2026-03-31T17:00:00+09:00",
       "description": "Tasks for master context"
     }
   }
