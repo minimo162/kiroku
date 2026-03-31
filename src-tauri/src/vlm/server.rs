@@ -408,6 +408,11 @@ fn resolve_binary_path(app_paths: &AppPaths) -> Option<PathBuf> {
         }
     }
 
+    // dev モード: CARGO_MANIFEST_DIR/binaries/ (DLL と exe が同居)
+    if let Some(manifest_dir) = option_env!("CARGO_MANIFEST_DIR") {
+        search_roots.push(PathBuf::from(manifest_dir).join("binaries"));
+    }
+
     for root in search_roots {
         if let Some(path) = find_binary_in_dir(&root) {
             return Some(path);
