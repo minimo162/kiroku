@@ -391,10 +391,15 @@ fn resolve_binary_path(app_paths: &AppPaths) -> Option<PathBuf> {
         }
     }
 
-    let mut search_roots = vec![
-        app_paths.data_dir.join("binaries"),
-        app_paths.data_dir.clone(),
-    ];
+    let mut search_roots = Vec::new();
+
+    // dev モード最優先: CARGO_MANIFEST_DIR/binaries/ (exe と DLL が同居)
+    if let Some(manifest_dir) = option_env!("CARGO_MANIFEST_DIR") {
+        search_roots.push(PathBuf::from(manifest_dir).join("binaries"));
+    }
+
+    search_roots.push(app_paths.data_dir.join("binaries"));
+    search_roots.push(app_paths.data_dir.clone());
 
     if let Some(resource_dir) = &app_paths.resource_dir {
         search_roots.push(resource_dir.join("binaries"));
@@ -406,11 +411,6 @@ fn resolve_binary_path(app_paths: &AppPaths) -> Option<PathBuf> {
             search_roots.push(parent.to_path_buf());
             search_roots.push(parent.join("binaries"));
         }
-    }
-
-    // dev モード: CARGO_MANIFEST_DIR/binaries/ (DLL と exe が同居)
-    if let Some(manifest_dir) = option_env!("CARGO_MANIFEST_DIR") {
-        search_roots.push(PathBuf::from(manifest_dir).join("binaries"));
     }
 
     for root in search_roots {
