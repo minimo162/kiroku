@@ -57,9 +57,10 @@ var CopilotSession = class {
   lock = false;
   async connect(cdpPort) {
     await ensureEdgeConnected(cdpPort);
+    const actualPort = globalOptions.cdpPort;
     if (!this.browser || !this.browser.isConnected()) {
       try {
-        this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+        this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${actualPort}`);
         this.browser.on("disconnected", () => {
           this.browser = null;
           this.page = null;
@@ -390,24 +391,45 @@ function createServer2(session) {
     }
   });
 }
+var CDP_PORT_SCAN_RANGE = 10;
 async function ensureEdgeConnected(cdpPort) {
   const existing = await probeCdpVersion(cdpPort);
-  if (existing && await isOurEdgeProfile(cdpPort)) {
+  if (existing && isOurEdgeProfile()) {
     return;
   }
-  if (existing) {
-    throw new Error(
-      `CDP \u30DD\u30FC\u30C8 ${cdpPort} \u306F\u5225\u306E Edge \u30D7\u30ED\u30BB\u30B9\u304C\u4F7F\u7528\u4E2D\u3067\u3059\u3002\u305D\u306E Edge \u3092\u9589\u3058\u3066\u304B\u3089\u518D\u8A66\u884C\u3059\u308B\u304B\u3001\u8A2D\u5B9A\u3067 CDP \u30DD\u30FC\u30C8\u3092\u5909\u66F4\u3057\u3066\u304F\u3060\u3055\u3044\u3002`
-    );
+  if (globalOptions.userDataDir && isOurEdgeProfile()) {
+    for (let port = cdpPort; port < cdpPort + CDP_PORT_SCAN_RANGE; port++) {
+      const probe = await probeCdpVersion(port);
+      if (probe) {
+        globalOptions.cdpPort = port;
+        return;
+      }
+    }
   }
   const edgeExecutable = findEdgeExecutable();
   if (!edgeExecutable) {
     throw new Error("Microsoft Edge \u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002Edge \u3092\u30A4\u30F3\u30B9\u30C8\u30FC\u30EB\u3057\u3066\u304F\u3060\u3055\u3044\u3002");
   }
-  launchEdgeForCdp(edgeExecutable, cdpPort);
+  let actualPort = cdpPort;
+  for (let port = cdpPort; port < cdpPort + CDP_PORT_SCAN_RANGE; port++) {
+    if (!await probeCdpVersion(port)) {
+      actualPort = port;
+      break;
+    }
+    if (port === cdpPort + CDP_PORT_SCAN_RANGE - 1) {
+      throw new Error(
+        `CDP \u30DD\u30FC\u30C8 ${cdpPort}\u301C${port} \u306F\u3059\u3079\u3066\u4F7F\u7528\u4E2D\u3067\u3059\u3002\u4ED6\u306E Edge \u30D7\u30ED\u30BB\u30B9\u3092\u9589\u3058\u3066\u304B\u3089\u518D\u8A66\u884C\u3057\u3066\u304F\u3060\u3055\u3044\u3002`
+      );
+    }
+  }
+  if (actualPort !== cdpPort) {
+    console.error(`[copilot] CDP port ${cdpPort} is occupied, using ${actualPort} instead`);
+  }
+  globalOptions.cdpPort = actualPort;
+  launchEdgeForCdp(edgeExecutable, actualPort);
   const deadline = Date.now() + EDGE_LAUNCH_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (await probeCdpVersion(cdpPort)) {
+    if (await probeCdpVersion(actualPort)) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, EDGE_LAUNCH_POLL_INTERVAL_MS));
@@ -416,13 +438,12 @@ async function ensureEdgeConnected(cdpPort) {
     "Edge \u306E\u30C7\u30D0\u30C3\u30B0\u63A5\u7D9A\u3092\u958B\u59CB\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F\u3002\u65E2\u5B58\u306E Edge \u3092\u9589\u3058\u3066\u304B\u3089\u518D\u8A66\u884C\u3057\u3066\u304F\u3060\u3055\u3044\u3002"
   );
 }
-async function isOurEdgeProfile(cdpPort) {
+function isOurEdgeProfile() {
   if (!globalOptions.userDataDir) {
     return true;
   }
   try {
-    const profileMarker = path.join(globalOptions.userDataDir, "Local State");
-    return fs.existsSync(profileMarker);
+    return fs.existsSync(path.join(globalOptions.userDataDir, "Local State"));
   } catch {
     return false;
   }

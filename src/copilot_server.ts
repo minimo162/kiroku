@@ -93,9 +93,12 @@ class CopilotSession {
   async connect(cdpPort: number): Promise<void> {
     await ensureEdgeConnected(cdpPort);
 
+    // ensureEdgeConnected がポートを変更している場合があるため、実際のポートを使用
+    const actualPort = globalOptions.cdpPort;
+
     if (!this.browser || !this.browser.isConnected()) {
       try {
-        this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+        this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${actualPort}`);
         this.browser.on("disconnected", () => {
           this.browser = null;
           this.page = null;
@@ -512,31 +515,57 @@ function createServer(session: CopilotSession): http.Server {
   });
 }
 
+const CDP_PORT_SCAN_RANGE = 10;
+
 async function ensureEdgeConnected(cdpPort: number): Promise<void> {
+  // 1. 指定ポートが Kiroku の Edge なら再利用
   const existing = await probeCdpVersion(cdpPort);
-  if (existing && (await isOurEdgeProfile(cdpPort))) {
+  if (existing && isOurEdgeProfile()) {
     return;
   }
 
-  if (existing) {
-    // CDP ポートは応答するが Kiroku 専用プロファイルではない
-    // → 別アプリまたは通常の Edge が使用中
-    throw new Error(
-      `CDP ポート ${cdpPort} は別の Edge プロセスが使用中です。` +
-        "その Edge を閉じてから再試行するか、設定で CDP ポートを変更してください。"
-    );
+  // 2. Kiroku の Edge が別ポートで動いていないか探す（前回の自動割り当て分）
+  if (globalOptions.userDataDir && isOurEdgeProfile()) {
+    for (let port = cdpPort; port < cdpPort + CDP_PORT_SCAN_RANGE; port++) {
+      const probe = await probeCdpVersion(port);
+      if (probe) {
+        // 見つかった → 実際に使うポートを切り替え
+        globalOptions.cdpPort = port;
+        return;
+      }
+    }
   }
 
+  // 3. 空きポートを探して新しい Edge を起動
   const edgeExecutable = findEdgeExecutable();
   if (!edgeExecutable) {
     throw new Error("Microsoft Edge が見つかりません。Edge をインストールしてください。");
   }
 
-  launchEdgeForCdp(edgeExecutable, cdpPort);
+  let actualPort = cdpPort;
+  for (let port = cdpPort; port < cdpPort + CDP_PORT_SCAN_RANGE; port++) {
+    if (!(await probeCdpVersion(port))) {
+      actualPort = port;
+      break;
+    }
+    if (port === cdpPort + CDP_PORT_SCAN_RANGE - 1) {
+      throw new Error(
+        `CDP ポート ${cdpPort}〜${port} はすべて使用中です。` +
+          "他の Edge プロセスを閉じてから再試行してください。"
+      );
+    }
+  }
+
+  if (actualPort !== cdpPort) {
+    console.error(`[copilot] CDP port ${cdpPort} is occupied, using ${actualPort} instead`);
+  }
+  globalOptions.cdpPort = actualPort;
+
+  launchEdgeForCdp(edgeExecutable, actualPort);
 
   const deadline = Date.now() + EDGE_LAUNCH_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (await probeCdpVersion(cdpPort)) {
+    if (await probeCdpVersion(actualPort)) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, EDGE_LAUNCH_POLL_INTERVAL_MS));
@@ -547,19 +576,12 @@ async function ensureEdgeConnected(cdpPort: number): Promise<void> {
   );
 }
 
-async function isOurEdgeProfile(cdpPort: number): Promise<boolean> {
+function isOurEdgeProfile(): boolean {
   if (!globalOptions.userDataDir) {
-    return true; // プロファイル指定なしなら検証不要
+    return true;
   }
-
   try {
-    // CDP /json/version の webSocketDebuggerUrl からブラウザに接続し、
-    // 開いているページの URL を確認する。
-    // Kiroku 専用プロファイルの Edge なら Copilot URL かログイン URL のページがあるはず。
-    // ただし初回起動直後はまだページがないかもしれないので、
-    // プロファイルディレクトリの存在で判定する。
-    const profileMarker = path.join(globalOptions.userDataDir, "Local State");
-    return fs.existsSync(profileMarker);
+    return fs.existsSync(path.join(globalOptions.userDataDir, "Local State"));
   } catch {
     return false;
   }
