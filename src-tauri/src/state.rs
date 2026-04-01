@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use tauri::{Manager, Runtime};
 use tokio::{
-    sync::{watch, Mutex},
+    sync::{watch, Mutex, Semaphore},
     task::JoinHandle,
 };
 
@@ -37,6 +37,7 @@ pub struct AppState {
     pub next_batch_run_at: Arc<Mutex<Option<String>>>,
     pub vlm_server: Arc<Mutex<LlamaServer>>,
     pub copilot_server: Arc<Mutex<CopilotServer>>,
+    pub copilot_semaphore: Arc<Semaphore>,
     pub vlm_batch_stop_signal: Arc<Mutex<Option<watch::Sender<bool>>>>,
     pub vlm_batch_pause_signal: Arc<Mutex<Option<watch::Sender<bool>>>>,
     pub vlm_batch_task: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -65,6 +66,7 @@ impl AppState {
             next_batch_run_at: Arc::new(Mutex::new(None)),
             vlm_server: Arc::new(Mutex::new(vlm_server)),
             copilot_server: Arc::new(Mutex::new(copilot_server)),
+            copilot_semaphore: Arc::new(Semaphore::new(1)),
             vlm_batch_stop_signal: Arc::new(Mutex::new(None)),
             vlm_batch_pause_signal: Arc::new(Mutex::new(None)),
             vlm_batch_task: Arc::new(Mutex::new(None)),

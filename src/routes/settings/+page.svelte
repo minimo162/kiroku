@@ -55,7 +55,7 @@
     max_frames_per_collage: 6,
     scheduler_enabled: true,
     setup_complete: false,
-    batch_times: ["12:00", "17:30"],
+    batch_times: ["12:00", "17:45"],
     vlm_engine: "copilot",
     vlm_host: "127.0.0.1:8080",
     vlm_max_tokens: 256,
@@ -418,7 +418,7 @@
               id="batch-time-evening"
               class="mt-3 w-full rounded-2xl border border-ink-100 bg-white px-4 py-3 text-sm text-ink-700 outline-none transition focus:border-brass-300 disabled:cursor-not-allowed disabled:opacity-50"
               type="time"
-              value={config.batch_times[1] ?? "17:30"}
+              value={config.batch_times[1] ?? "17:45"}
               oninput={(event) => updateBatchTime(1, (event.currentTarget as HTMLInputElement).value)}
               disabled={!config.scheduler_enabled}
             />

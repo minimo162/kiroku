@@ -52,6 +52,8 @@ pub struct AppConfig {
     pub system_prompt: String,
     pub user_prompt: String,
     pub session_user_prompt: String,
+    pub hourly_summary_prompt: String,
+    pub daily_record_prompt: String,
     pub mask_rules: Vec<MaskRule>,
 }
 
@@ -67,7 +69,7 @@ impl Default for AppConfig {
             max_frames_per_collage: 6,
             scheduler_enabled: true,
             setup_complete: false,
-            batch_times: vec!["12:00".to_string(), "17:30".to_string()],
+            batch_times: vec!["12:00".to_string(), "17:45".to_string()],
             vlm_engine: "copilot".to_string(),
             vlm_host: "127.0.0.1:8080".to_string(),
             vlm_max_tokens: 256,
@@ -77,6 +79,8 @@ impl Default for AppConfig {
             system_prompt: default_system_prompt(),
             user_prompt: default_user_prompt(),
             session_user_prompt: default_session_user_prompt(),
+            hourly_summary_prompt: default_hourly_summary_prompt(),
+            daily_record_prompt: default_daily_record_prompt(),
             mask_rules: Vec::new(),
         }
     }
@@ -143,6 +147,28 @@ pub fn default_session_user_prompt() -> String {
     .to_string()
 }
 
+pub fn default_hourly_summary_prompt() -> String {
+    concat!(
+        "以下は {start_time} から {end_time} の間の業務セッション記録です。\n\n",
+        "{sessions}\n\n",
+        "この時間帯の業務を2〜3文で要約してください。",
+        "使用したアプリケーション、主な操作内容、対象データを含めてください。",
+        "出力は自然な日本語の文章のみとし、箇条書きや JSON は使わないでください。"
+    )
+    .to_string()
+}
+
+pub fn default_daily_record_prompt() -> String {
+    concat!(
+        "以下は {date} の {period} の時間帯別業務要約です。\n\n",
+        "{summaries}\n\n",
+        "この期間の業務内容を3〜5文でまとめてください。",
+        "主な業務カテゴリ、使用アプリケーション、作業の流れを含めてください。",
+        "出力は自然な日本語の文章のみとし、箇条書きや JSON は使わないでください。"
+    )
+    .to_string()
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaptureStats {
     pub total_captures: u64,
@@ -170,8 +196,8 @@ pub struct VlmBatchProgress {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_session_user_prompt, default_system_prompt, default_user_prompt, AppConfig,
-        CaptureRecord, MaskRule,
+        default_daily_record_prompt, default_hourly_summary_prompt, default_session_user_prompt,
+        default_system_prompt, default_user_prompt, AppConfig, CaptureRecord, MaskRule,
     };
 
     #[test]
@@ -186,7 +212,7 @@ mod tests {
             max_frames_per_collage: 6,
             scheduler_enabled: true,
             setup_complete: true,
-            batch_times: vec!["12:00".to_string(), "17:30".to_string()],
+            batch_times: vec!["12:00".to_string(), "17:45".to_string()],
             vlm_engine: "copilot".to_string(),
             vlm_host: "127.0.0.1:8181".to_string(),
             vlm_max_tokens: 384,
@@ -196,6 +222,8 @@ mod tests {
             system_prompt: default_system_prompt(),
             user_prompt: default_user_prompt(),
             session_user_prompt: default_session_user_prompt(),
+            hourly_summary_prompt: default_hourly_summary_prompt(),
+            daily_record_prompt: default_daily_record_prompt(),
             mask_rules: vec![MaskRule {
                 pattern: "株式会社A".to_string(),
                 replacement: "[取引先]".to_string(),

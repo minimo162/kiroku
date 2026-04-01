@@ -889,11 +889,149 @@
             "status": "pending"
           }
         ]
+      },
+      {
+        "id": 50,
+        "title": "L2 時間帯要約の定期生成（60分ごと）(SUM-001, SUM-004, SUM-007)",
+        "description": "60分ごとにその時間帯のセッション説明文（L1）を Copilot でテキスト要約し、L2 時間帯要約として DB に保存する。画像なしのテキストのみリクエストで実行する。",
+        "details": "**DB スキーマ:**\n\n```sql\nCREATE TABLE IF NOT EXISTS hourly_summaries (\n    id TEXT PRIMARY KEY,\n    period_start TEXT NOT NULL,\n    period_end TEXT NOT NULL,\n    source_session_ids TEXT NOT NULL,  -- JSON array of session IDs\n    summary TEXT NOT NULL,\n    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n);\nCREATE INDEX IF NOT EXISTS idx_hourly_summaries_period ON hourly_summaries(period_start);\n\nCREATE TABLE IF NOT EXISTS daily_records (\n    id TEXT PRIMARY KEY,\n    record_date TEXT NOT NULL,\n    period_type TEXT NOT NULL,  -- 'morning' or 'afternoon'\n    source_summary_ids TEXT NOT NULL,  -- JSON array of hourly_summary IDs\n    record TEXT NOT NULL,\n    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n);\nCREATE INDEX IF NOT EXISTS idx_daily_records_date ON daily_records(record_date);\n```\n\n**定期タスク実装:**\n\n1. `scheduler.rs` に 60分ごとの L2 要約タイマーを追加\n   - 毎時 00分（例: 9:00, 10:00, ...）に前の60分間のセッション説明文を収集\n   - `batch_running == true` の場合はスキップし、バッチ完了後に実行\n2. L2 要約リクエストは画像なしで Copilot に送信\n   - `/v1/chat/completions` にテキストのみのメッセージを送信\n   - セッション説明文を連結してプロンプトに含める\n   - セッション内の主要アプリ名も含める\n3. `inference.rs` にテキストのみ要約用の関数を新設\n   - `summarize_text(client, server_url, max_tokens, prompt_context)` — 画像なし版\n\n**プロンプト例（L2）:**\n```\nシステム: あなたは経理部門向けの業務記録アシスタントです。\nユーザー: 以下は {start_time} から {end_time} の間の業務記録です。\n\n[セッション1] 09:00-09:05 (Excel, SAP GUI)\n{セッション1の説明文}\n\n[セッション2] 09:05-09:10 (Outlook)\n{セッション2の説明文}\n...\n\nこの時間帯の業務を2〜3文で要約してください。\n```",
+        "testStrategy": "1. 60分タイマーが正しく発火すること\n2. L2 要約が hourly_summaries テーブルに保存されること\n3. batch_running 中はスキップされること\n4. Copilot へのリクエストが画像なしテキストのみであること",
+        "priority": "high",
+        "dependencies": [],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "DB マイグレーション: hourly_summaries テーブルと daily_records テーブルの作成",
+            "status": "pending"
+          },
+          {
+            "id": 2,
+            "title": "inference.rs にテキストのみ要約関数 summarize_text() を新設",
+            "status": "pending"
+          },
+          {
+            "id": 3,
+            "title": "scheduler.rs に60分ごとの L2 要約タイマーを追加",
+            "status": "pending"
+          },
+          {
+            "id": 4,
+            "title": "L2 要約のプロンプトテンプレートを models.rs に追加",
+            "status": "pending"
+          },
+          {
+            "id": 5,
+            "title": "batch_running 中のスキップとバッチ完了後の実行ロジック",
+            "status": "pending"
+          }
+        ]
+      },
+      {
+        "id": 51,
+        "title": "日次記録の自動生成（L3: 12:00 / 17:45 バッチ）(SUM-002, SUM-003, SUM-006)",
+        "description": "バッチ実行時に、既存のセッション説明文生成に加えて、L2 時間帯要約を基にした日次記録（L3）を生成する。12:00 は当日全体、17:45 は 12:00 以降の L2 要約を対象とする。DEFAULT_BATCH_TIMES を 17:30→17:45 に変更。",
+        "details": "**バッチフロー（拡張後）:**\n\n```\n1. 既存: 未処理セッションの説明文生成（L1）\n2. 新規: 未処理の60分帯の L2 要約生成\n3. 新規: L3 日次記録の生成\n   - 12:00 バッチ → 当日 00:00〜現在の全 L2 要約を対象\n   - 17:45 バッチ → 当日 12:00〜現在の L2 要約を対象\n```\n\n**実装内容:**\n\n1. `scheduler.rs` の `DEFAULT_BATCH_TIMES` を `[\"12:00\", \"17:45\"]` に変更\n2. `config.rs` にマイグレーション追加: `batch_times` 内の \"17:30\" → \"17:45\"\n3. `batch.rs` の `run_scheduled_batch()` を拡張:\n   - 既存の L1 バッチ完了後、未生成の L2 要約を生成\n   - L2 完了後、L3 日次記録を生成\n   - バッチ時刻に応じて L3 の対象範囲を決定\n4. L3 プロンプトは L2 要約のみを含める（文字数抑制）\n\n**プロンプト例（L3）:**\n```\nシステム: あなたは経理部門向けの業務記録アシスタントです。\nユーザー: 以下は {date} {period} の時間帯別業務要約です。\n\n[09:00-10:00]\n{L2要約}\n\n[10:00-11:00]\n{L2要約}\n...\n\nこの期間の業務内容を3〜5文でまとめ、主な業務カテゴリと時間配分を記述してください。\n```\n\n**注意:** L1 → L2 → L3 は全て Copilot に直列で送信するため、1バッチの処理時間が増加する。進捗表示を拡張して L2/L3 フェーズも表示すること。",
+        "testStrategy": "1. DEFAULT_BATCH_TIMES が 17:45 に変更されていること\n2. 既存設定の 17:30 が 17:45 にマイグレーションされること\n3. 12:00 バッチで当日全体の日次記録が生成されること\n4. 17:45 バッチで 12:00 以降の日次記録が生成されること\n5. L3 プロンプトに L2 要約のみが含まれること（L1 説明文は含まれないこと）",
+        "priority": "high",
+        "dependencies": [50],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "DEFAULT_BATCH_TIMES を 17:30 → 17:45 に変更 + config マイグレーション",
+            "status": "pending"
+          },
+          {
+            "id": 2,
+            "title": "run_scheduled_batch() を拡張: L1 → L2 → L3 の3段階バッチ",
+            "status": "pending"
+          },
+          {
+            "id": 3,
+            "title": "L3 日次記録のプロンプトテンプレートを models.rs に追加",
+            "status": "pending"
+          },
+          {
+            "id": 4,
+            "title": "バッチ時刻に応じた L3 対象範囲の決定ロジック（12:00=全日, 17:45=午後）",
+            "status": "pending"
+          },
+          {
+            "id": 5,
+            "title": "進捗表示の拡張（L2/L3 フェーズの表示）",
+            "status": "pending"
+          }
+        ]
+      },
+      {
+        "id": 52,
+        "title": "Copilot リクエストキューによる競合防止 (SUM-005)",
+        "description": "Copilot は同時に1リクエストしか処理できないため、L1/L2/L3 の全リクエストを直列化するキューを導入する。",
+        "details": "**実装:**\n\n1. `state.rs` の `AppState` に `copilot_request_semaphore: Arc<Semaphore>` を追加（permits=1）\n2. `inference.rs` の `describe_screenshot()` と新設の `summarize_text()` の呼び出し側で semaphore を acquire してからリクエストを送信\n3. 60分定期タスク（L2）が `batch_running == true` の間はスキップし、バッチ完了イベント後に実行する\n4. バッチ内では L1 → L2 → L3 を順番に実行するため、バッチ内での競合は発生しない\n5. バッチ外（60分タイマー）とバッチが同時に動こうとした場合:\n   - semaphore により自動的に待機\n   - ただし、バッチ開始時に60分タイマーが実行中なら完了を待つ\n\n**代替案（シンプル版）:**\nもし semaphore が過剰であれば、単に `batch_running` フラグで60分タイマーをスキップし、バッチ内で L1 → L2 → L3 を順次実行するだけでも競合は防げる。60分タイマーの取りこぼし分はバッチの L2 ステップで回収される。",
+        "testStrategy": "1. L1 と L2 のリクエストが同時に Copilot に送信されないこと\n2. バッチ実行中に60分タイマーが発火してもスキップされること\n3. バッチ完了後に未生成の L2 が回収されること",
+        "priority": "high",
+        "dependencies": [50],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "AppState に copilot_request_semaphore（Semaphore permits=1）を追加",
+            "status": "pending"
+          },
+          {
+            "id": 2,
+            "title": "describe_screenshot / summarize_text の呼び出し側で semaphore を acquire",
+            "status": "pending"
+          },
+          {
+            "id": 3,
+            "title": "60分タイマーの batch_running スキップとバッチ完了後の回収ロジック",
+            "status": "pending"
+          }
+        ]
+      },
+      {
+        "id": 53,
+        "title": "セッション説明文へのアプリ名付与とログ出力の説明文単位化 (SUM-008, LOG-001〜003)",
+        "description": "セッションバッチ時にセッション内キャプチャのアプリ名・タイトル上位をプロンプトに含める。CSV エクスポートにセッション単位出力モードを追加する。",
+        "details": "**アプリ名付与 (SUM-008):**\n\n1. `batch.rs` の `run_session_batch_loop()` で、セッション内のキャプチャから `app` と `window_title` を集計\n2. 出現頻度上位3件のアプリ名とタイトルを PromptContext に渡す\n3. 現在 `app: None, window_title: None` になっている箇所を修正\n4. 集計方法: `SELECT app, COUNT(*) as cnt FROM captures WHERE session_id = ? GROUP BY app ORDER BY cnt DESC LIMIT 3`\n5. PromptContext の app フィールドにはカンマ区切りで連結（例: \"Excel.exe, OUTLOOK.exe, chrome.exe\"）\n\n**CSV エクスポートのセッション単位出力 (LOG-001〜003):**\n\n1. `export.rs` の `ExportFilter` に `group_by_session: bool` フィールドを追加\n2. `group_by_session == true` の場合:\n   - sessions テーブルから出力\n   - カラム: session_id, start_time, end_time, primary_app, description\n   - primary_app はセッション内で最も出現頻度の高いアプリ名\n3. `group_by_session == false`（既存動作）: キャプチャ単位で出力\n4. フロントエンドのエクスポート画面に切り替えオプションを追加",
+        "testStrategy": "1. セッション説明文のプロンプトにアプリ名が含まれること\n2. CSV エクスポートでセッション単位出力が正しく動作すること\n3. 既存のキャプチャ単位出力が影響を受けないこと",
+        "priority": "medium",
+        "dependencies": [50],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "セッション内キャプチャのアプリ名・タイトル上位を集計する DB クエリ追加",
+            "status": "pending"
+          },
+          {
+            "id": 2,
+            "title": "run_session_batch_loop() の PromptContext にアプリ名を渡すよう修正",
+            "status": "pending"
+          },
+          {
+            "id": 3,
+            "title": "ExportFilter に group_by_session フラグを追加",
+            "status": "pending"
+          },
+          {
+            "id": 4,
+            "title": "セッション単位 CSV エクスポートのクエリと Writer 実装",
+            "status": "pending"
+          },
+          {
+            "id": 5,
+            "title": "フロントエンドのエクスポート画面にセッション単位切り替えオプション追加",
+            "status": "pending"
+          }
+        ]
       }
     ],
     "metadata": {
       "created": "2026-03-30T12:24:28.400Z",
-      "updated": "2026-03-31T19:00:00+09:00",
+      "updated": "2026-04-01T12:00:00+09:00",
       "description": "Tasks for master context"
     }
   }

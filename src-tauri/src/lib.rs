@@ -28,7 +28,7 @@ use preview::{
     get_capture_description_history, get_capture_preview_page, update_capture_description,
 };
 use recorder::{start_recording, stop_recording};
-use scheduler::spawn_scheduler;
+use scheduler::{spawn_hourly_summarizer, spawn_scheduler};
 use state::AppState;
 use tray::{handle_close_requested, setup_tray};
 use vlm::batch::{cancel_vlm_batch, pause_vlm_batch, resume_vlm_batch, run_vlm_batch};
@@ -44,6 +44,7 @@ pub fn run() {
         .setup(|app| {
             let state = AppState::new(app.handle())?;
             let scheduler_state = state.clone();
+            let hourly_state = state.clone();
             let auto_connect_state = state.clone();
             if let Err(error) = tauri::async_runtime::block_on(cleanup_capture_storage(&state)) {
                 eprintln!("startup capture cleanup failed: {error}");
@@ -51,6 +52,7 @@ pub fn run() {
             app.manage(state);
             setup_tray(app.handle())?;
             spawn_scheduler(app.handle().clone(), scheduler_state);
+            spawn_hourly_summarizer(app.handle().clone(), hourly_state);
             spawn_copilot_auto_connect(app.handle().clone(), auto_connect_state);
             #[cfg(desktop)]
             {

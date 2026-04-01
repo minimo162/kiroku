@@ -5,7 +5,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_notification::NotificationExt;
 use tokio::{
-    sync::watch,
+    sync::{OwnedSemaphorePermit, watch},
     time::{sleep, Duration},
 };
 
@@ -13,7 +13,8 @@ use crate::{
     capture::remove_capture_artifacts,
     db::{
         clear_image_path, get_unprocessed, get_unprocessed_sessions, mark_processed,
-        mark_session_processed, update_description,
+        get_top_apps_for_session, get_top_window_titles_for_session, mark_session_processed,
+        update_description,
     },
     models::{AppConfig, VlmBatchProgress},
     session::process_pending_sessions,
@@ -350,19 +351,59 @@ async fn vlm_batch_loop(
         };
 
         let started_at = Instant::now();
-        match describe_screenshot(
-            &client,
-            Path::new(&image_path),
-            &server_url,
-            max_tokens,
-            PromptContext {
-                app: Some(&record.app),
-                window_title: Some(&record.window_title),
-                system_prompt: Some(&config.system_prompt),
-                user_prompt: Some(&config.user_prompt),
-            },
-        )
-        .await
+        let result = if options.vlm_engine == "copilot" {
+            let permit = match acquire_copilot_permit(&state).await {
+                Ok(permit) => permit,
+                Err(error) => {
+                    finish_batch(
+                        &app,
+                        &state,
+                        BatchResult {
+                            total,
+                            completed,
+                            failed,
+                            cancelled: false,
+                            error: None,
+                        },
+                        Some(error.to_string()),
+                        &options,
+                    )
+                    .await;
+                    return;
+                }
+            };
+            let result = describe_screenshot(
+                &client,
+                Path::new(&image_path),
+                &server_url,
+                max_tokens,
+                PromptContext {
+                    app: Some(&record.app),
+                    window_title: Some(&record.window_title),
+                    system_prompt: Some(&config.system_prompt),
+                    user_prompt: Some(&config.user_prompt),
+                },
+            )
+            .await;
+            drop(permit);
+            result
+        } else {
+            describe_screenshot(
+                &client,
+                Path::new(&image_path),
+                &server_url,
+                max_tokens,
+                PromptContext {
+                    app: Some(&record.app),
+                    window_title: Some(&record.window_title),
+                    system_prompt: Some(&config.system_prompt),
+                    user_prompt: Some(&config.user_prompt),
+                },
+            )
+            .await
+        };
+
+        match result
         {
             Ok(description) => {
                 let update_result = {
@@ -645,21 +686,53 @@ async fn run_session_batch_loop(
             .replace("{end_time}", &format_time_hhmm(&session.end_time))
             .replace("{duration_min}", &duration_min.to_string())
             .replace("{frame_count}", &session.frame_count.to_string());
+        let (top_apps, top_titles) = {
+            let db = state.db.lock().await;
+            (
+                get_top_apps_for_session(&db, &session.id, 3)
+                    .unwrap_or_default()
+                    .join(", "),
+                get_top_window_titles_for_session(&db, &session.id, 3)
+                    .unwrap_or_default()
+                    .join(", "),
+            )
+        };
 
         let started_at = Instant::now();
+        let permit = match acquire_copilot_permit(&state).await {
+            Ok(permit) => permit,
+            Err(error) => {
+                finish_batch(
+                    &app,
+                    &state,
+                    BatchResult {
+                        total,
+                        completed,
+                        failed,
+                        cancelled: false,
+                        error: None,
+                    },
+                    Some(error.to_string()),
+                    &options,
+                )
+                .await;
+                return;
+            }
+        };
         let result = describe_screenshot(
             &client,
             Path::new(&collage_path),
             &server_url,
             config.vlm_max_tokens,
             PromptContext {
-                app: None,
-                window_title: None,
+                app: (!top_apps.is_empty()).then_some(top_apps.as_str()),
+                window_title: (!top_titles.is_empty()).then_some(top_titles.as_str()),
                 system_prompt: Some(&config.system_prompt),
                 user_prompt: Some(&user_prompt),
             },
         )
         .await;
+        drop(permit);
 
         match result {
             Ok(description) => {
@@ -915,6 +988,15 @@ async fn wait_if_paused(
 
 fn should_stop(cancel_rx: &watch::Receiver<bool>) -> bool {
     *cancel_rx.borrow()
+}
+
+async fn acquire_copilot_permit(state: &AppState) -> Result<OwnedSemaphorePermit, VlmError> {
+    state
+        .copilot_semaphore
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| VlmError::InvalidResponse("copilot semaphore closed".to_string()))
 }
 
 fn get_capture_ids_for_session(

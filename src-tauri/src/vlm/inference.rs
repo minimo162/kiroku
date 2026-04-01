@@ -28,6 +28,11 @@ pub struct PromptContext<'a> {
     pub user_prompt: Option<&'a str>,
 }
 
+pub struct TextPromptContext<'a> {
+    pub system_prompt: &'a str,
+    pub user_prompt: &'a str,
+}
+
 pub async fn describe_screenshot(
     client: &Client,
     image_path: &Path,
@@ -69,6 +74,38 @@ pub async fn describe_screenshot(
     ))
 }
 
+pub async fn summarize_text(
+    client: &Client,
+    server_url: &str,
+    max_tokens: u32,
+    prompt_context: TextPromptContext<'_>,
+) -> Result<String, VlmError> {
+    let endpoint = format!("{}/v1/chat/completions", server_url.trim_end_matches('/'));
+
+    for attempt in 0..MAX_RETRIES {
+        match request_text_summary(
+            client,
+            &endpoint,
+            max_tokens,
+            prompt_context.system_prompt,
+            prompt_context.user_prompt,
+        )
+        .await
+        {
+            Ok(summary) => return Ok(summary),
+            Err(error) if attempt + 1 < MAX_RETRIES && should_retry(&error) => {
+                let backoff = INITIAL_BACKOFF_MS * (1_u64 << attempt);
+                sleep(Duration::from_millis(backoff)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(VlmError::InvalidResponse(
+        "Text summarization exhausted all retries".to_string(),
+    ))
+}
+
 async fn request_description(
     client: &Client,
     endpoint: &str,
@@ -106,22 +143,61 @@ async fn request_description(
         .await?;
 
     if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
-            if value["error"].as_str() == Some("login_required") {
-                let message = value["message"]
-                    .as_str()
-                    .unwrap_or("Copilot login required");
-                return Err(VlmError::LoginRequired(message.to_string()));
-            }
-        }
-
-        return Err(VlmError::UnexpectedStatus(status.as_u16()));
+        return Err(parse_error_response(response).await);
     }
 
     let response = response.json::<serde_json::Value>().await?;
     extract_description(&response)
+}
+
+async fn request_text_summary(
+    client: &Client,
+    endpoint: &str,
+    max_tokens: u32,
+    system_prompt: &str,
+    user_prompt: &str,
+) -> Result<String, VlmError> {
+    let payload = json!({
+        "model": "qwen",
+        "messages": [{
+            "role": "system",
+            "content": system_prompt
+        }, {
+            "role": "user",
+            "content": user_prompt
+        }],
+        "max_tokens": max_tokens,
+        "temperature": 0.1
+    });
+
+    let response = client
+        .post(endpoint)
+        .json(&payload)
+        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(parse_error_response(response).await);
+    }
+
+    let response = response.json::<serde_json::Value>().await?;
+    extract_description(&response)
+}
+
+async fn parse_error_response(response: reqwest::Response) -> VlmError {
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
+        if value["error"].as_str() == Some("login_required") {
+            let message = value["message"]
+                .as_str()
+                .unwrap_or("Copilot login required");
+            return VlmError::LoginRequired(message.to_string());
+        }
+    }
+
+    VlmError::UnexpectedStatus(status.as_u16())
 }
 
 async fn load_resized_image_base64(image_path: &Path) -> Result<String, VlmError> {

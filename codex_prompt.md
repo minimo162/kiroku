@@ -1,548 +1,629 @@
-# Codex 実装指示: Copilot 接続の完全自動化と競合回避 (T26〜T28)
+# Codex 実装指示: 階層的要約・日次記録・ログ改善 (T50〜T53)
 
 ## 方針
 
-- **T26 → T27 → T28 の順で実装すること**（依存関係あり）
+- **T50 → T52 → T51 → T53 の順で実装すること**（依存関係あり）
 - `cargo check` でエラーがないことを確認してから次のタスクへ進むこと
 - 既存テスト（`cargo test`）が壊れないこと
-- copilot_server.ts の変更後は `npx esbuild src/copilot_server.ts --bundle --platform=node --outfile=src-tauri/binaries/copilot_server.js --format=esm --external:playwright` でバンドルすること
+- 各タスク完了後に `cargo test` を実行して既存テストが通ることを確認
+
+## 背景
+
+現在のアーキテクチャ:
+- キャプチャ: 10秒ごとにスクリーンショット取得
+- セッション: 5分（session_window_secs=300）ごとにコラージュを作成
+- バッチ: 12:00 と 17:30 に未処理セッションの説明文を Copilot で生成
+
+**追加する3層要約:**
+- L1（既存）: セッション説明文（5分ごと、コラージュ画像ベース）
+- L2（新規）: 時間帯要約（60分ごと、L1 説明文のテキスト要約）
+- L3（新規）: 日次記録（バッチ時、L2 要約を基にした半日/1日のまとめ）
 
 ---
 
-## T26: Kiroku 専用 Edge プロファイルと非標準 CDP ポート
+## T50: L2 時間帯要約の定期生成（60分ごと）
 
 ### 目的
-他の Copilot 自動化ツールやユーザーの通常 Edge との競合を防ぐ。
-`--user-data-dir` で専用プロファイルを使い、CDP ポートを非標準に変更する。
+60分ごとにその時間帯のセッション説明文（L1）を Copilot でテキスト要約し、中間要約（L2）として DB に保存する。これにより、日次記録（L3）生成時のプロンプト文字数を抑制する。
 
 ### 対象ファイル
-- `src/copilot_server.ts`
-- `src-tauri/src/vlm/copilot_server.rs`
-- `src-tauri/src/models.rs`
-- `src-tauri/src/config.rs`
+- `src-tauri/src/db.rs`（マイグレーション + クエリ追加）
+- `src-tauri/src/models.rs`（プロンプトテンプレート追加）
+- `src-tauri/src/vlm/inference.rs`（テキストのみ要約関数追加）
+- `src-tauri/src/scheduler.rs`（60分タイマー追加）
 
 ### 変更内容
 
-#### 1. src/copilot_server.ts
+#### 1. DB マイグレーション（db.rs）
 
-**DEFAULT_CDP_PORT を変更:**
-```typescript
-// 変更前
-const DEFAULT_CDP_PORT = 9222;
-// 変更後
-const DEFAULT_CDP_PORT = 9333;
-```
+`apply_migrations()` に version < 4 のマイグレーションを追加:
 
-**ParsedArgs 型に userDataDir を追加:**
-```typescript
-type ParsedArgs = {
-  port: number;
-  cdpPort: number;
-  userDataDir: string | null;
-  help: boolean;
-};
-```
+```rust
+if version < 4 {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS hourly_summaries (
+            id TEXT PRIMARY KEY,
+            period_start TEXT NOT NULL,
+            period_end TEXT NOT NULL,
+            source_session_ids TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_hourly_summaries_period
+            ON hourly_summaries(period_start);
 
-**parseArgs() に --user-data-dir を追加:**
-```typescript
-function parseArgs(argv: string[]): ParsedArgs {
-  let port = DEFAULT_PORT;
-  let cdpPort = DEFAULT_CDP_PORT;
-  let userDataDir: string | null = null;
-  let help = false;
-
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (arg === "--help" || arg === "-h") {
-      help = true;
-      continue;
-    }
-    if (arg === "--port") {
-      port = parsePort(argv[index + 1], "--port");
-      index += 1;
-      continue;
-    }
-    if (arg === "--cdp-port") {
-      cdpPort = parsePort(argv[index + 1], "--cdp-port");
-      index += 1;
-      continue;
-    }
-    if (arg === "--user-data-dir") {
-      userDataDir = argv[index + 1] ?? null;
-      index += 1;
-      continue;
-    }
-  }
-
-  return { port, cdpPort, userDataDir, help };
+        CREATE TABLE IF NOT EXISTS daily_records (
+            id TEXT PRIMARY KEY,
+            record_date TEXT NOT NULL,
+            period_type TEXT NOT NULL,
+            source_summary_ids TEXT NOT NULL,
+            record TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_daily_records_date
+            ON daily_records(record_date);
+        ",
+    )?;
+    conn.pragma_update(None, "user_version", DB_SCHEMA_VERSION)?;
 }
 ```
 
-**launchEdgeForCdp() で --user-data-dir を使用:**
-```typescript
-function launchEdgeForCdp(edgeExecutable: string, cdpPort: number): void {
-  const args = [
-    `--remote-debugging-port=${cdpPort}`,
-    "--remote-allow-origins=*",
-    "--no-first-run",
-    "--no-default-browser-check",
-  ];
+`DB_SCHEMA_VERSION` を 4 に更新すること。
 
-  // Kiroku 専用プロファイルで起動（他ツールとの競合を防ぐ）
-  if (globalOptions.userDataDir) {
-    args.push(`--user-data-dir=${globalOptions.userDataDir}`);
-  }
+**クエリ関数を追加:**
 
-  args.push(COPILOT_URL);
-
-  const child = spawn(edgeExecutable, args, {
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true,
-  });
-  child.unref();
+```rust
+/// 指定時間帯のセッション説明文を取得（L2 要約の入力）
+pub fn get_sessions_in_period(
+    conn: &Connection,
+    period_start: &str,
+    period_end: &str,
+) -> Result<Vec<SessionRecord>, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, start_time, end_time, collage_path, description, processed, capture_count, frame_count, created_at
+         FROM sessions
+         WHERE processed = 1
+           AND description IS NOT NULL
+           AND start_time >= ?1
+           AND start_time < ?2
+         ORDER BY start_time ASC"
+    )?;
+    // ... map rows to SessionRecord
 }
-```
 
-**main() の help メッセージを更新:**
-```typescript
-console.error("Usage: node copilot_server.js [--port 18080] [--cdp-port 9333] [--user-data-dir <path>]");
-```
-
-#### 2. src-tauri/src/vlm/copilot_server.rs
-
-**CopilotServer に edge_profile_dir を追加:**
-```rust
-#[derive(Debug)]
-pub struct CopilotServer {
-    process: Option<Child>,
-    port: u16,
-    cdp_port: u16,
-    client: Client,
-    script_path: Option<PathBuf>,
-    edge_profile_dir: PathBuf,
+/// 既に L2 要約が生成済みかチェック
+pub fn hourly_summary_exists(
+    conn: &Connection,
+    period_start: &str,
+    period_end: &str,
+) -> Result<bool, DbError> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM hourly_summaries WHERE period_start = ?1 AND period_end = ?2",
+        params![period_start, period_end],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
 }
+
+/// L2 要約を保存
+pub fn insert_hourly_summary(
+    conn: &Connection,
+    id: &str,
+    period_start: &str,
+    period_end: &str,
+    source_session_ids: &str,  // JSON array
+    summary: &str,
+) -> Result<(), DbError> { ... }
+
+/// 指定日時以降の L2 要約を取得（L3 生成の入力）
+pub fn get_hourly_summaries_since(
+    conn: &Connection,
+    since: &str,
+) -> Result<Vec<HourlySummaryRecord>, DbError> { ... }
+
+/// L3 日次記録を保存
+pub fn insert_daily_record(
+    conn: &Connection,
+    id: &str,
+    record_date: &str,
+    period_type: &str,  // "morning" or "afternoon"
+    source_summary_ids: &str,  // JSON array
+    record: &str,
+) -> Result<(), DbError> { ... }
 ```
 
-**new() を変更:**
+#### 2. テキストのみ要約関数（inference.rs）
+
+既存の `describe_screenshot()` は画像付きリクエストを送信する。
+L2/L3 は画像なしのテキストのみなので、新しい関数を追加:
+
 ```rust
-pub fn new(config: &AppConfig, app_paths: &AppPaths) -> Result<Self, VlmError> {
-    let edge_profile_dir = app_paths.data_dir.join("edge-profile");
-    Ok(Self {
-        process: None,
-        port: config.copilot_port,
-        cdp_port: config.edge_cdp_port,
-        client: Client::builder()
-            .timeout(Duration::from_secs(3))
-            .build()
-            .map_err(VlmError::Http)?,
-        script_path: resolve_script_path(app_paths),
-        edge_profile_dir,
-    })
+pub struct TextPromptContext<'a> {
+    pub system_prompt: &'a str,
+    pub user_prompt: &'a str,
 }
-```
 
-**start() の args に --user-data-dir を追加:**
+/// テキストのみで Copilot に要約リクエストを送信する（画像なし）
+pub async fn summarize_text(
+    client: &Client,
+    server_url: &str,
+    max_tokens: u32,
+    prompt_context: TextPromptContext<'_>,
+) -> Result<String, VlmError> {
+    let endpoint = format!("{}/v1/chat/completions", server_url.trim_end_matches('/'));
 
-既存の args 配列:
-```rust
-.args([
-    &script_path.to_string_lossy().into_owned(),
-    "--port",
-    &self.port.to_string(),
-    "--cdp-port",
-    &self.cdp_port.to_string(),
-])
-```
+    let payload = json!({
+        "model": "qwen",
+        "messages": [{
+            "role": "system",
+            "content": prompt_context.system_prompt
+        }, {
+            "role": "user",
+            "content": prompt_context.user_prompt
+        }],
+        "max_tokens": max_tokens,
+        "temperature": 0.1
+    });
 
-を以下に変更:
-```rust
-.args({
-    let mut args = vec![
-        script_path.to_string_lossy().into_owned(),
-        "--port".to_string(),
-        self.port.to_string(),
-        "--cdp-port".to_string(),
-        self.cdp_port.to_string(),
-        "--user-data-dir".to_string(),
-        self.edge_profile_dir.to_string_lossy().into_owned(),
-    ];
-    args
-}.iter().map(|s| s.as_str()).collect::<Vec<_>>())
-```
+    // リトライロジックは describe_screenshot と同様
+    for attempt in 0..MAX_RETRIES {
+        let response = client
+            .post(&endpoint)
+            .json(&payload)
+            .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+            .send()
+            .await?;
 
-注意: `.args()` は `&[&str]` を受け取るため、`let args_owned: Vec<String>` を作ってから参照を渡す方がクリーン:
-
-```rust
-let args_owned = vec![
-    script_path.to_string_lossy().into_owned(),
-    "--port".to_string(),
-    self.port.to_string(),
-    "--cdp-port".to_string(),
-    self.cdp_port.to_string(),
-    "--user-data-dir".to_string(),
-    self.edge_profile_dir.to_string_lossy().into_owned(),
-];
-
-let child = match Command::new(node)
-    .args(&args_owned)
-    .stdout(Stdio::null())
-    .stderr(Stdio::from(stderr_file))
-    .spawn()
-```
-
-#### 3. src-tauri/src/models.rs
-
-**edge_cdp_port のデフォルトを変更:**
-```rust
-// 変更前
-edge_cdp_port: 9222,
-// 変更後
-edge_cdp_port: 9333,
-```
-
-2 箇所（Default impl と with_data_dir）の両方を変更すること。
-
-#### 4. src-tauri/src/config.rs
-
-**load_config() にマイグレーションを追加:**
-
-既存のマイグレーション処理（`batch_times.is_empty()` チェック等）の近くに追加:
-
-```rust
-// CDP ポートのマイグレーション: 9222 → 9333（競合回避）
-if config.edge_cdp_port == 9222 {
-    config.edge_cdp_port = 9333;
-}
-```
-
-#### 5. esbuild バンドル
-
-変更後にバンドルを実行:
-```bash
-npx esbuild src/copilot_server.ts --bundle --platform=node --outfile=src-tauri/binaries/copilot_server.js --format=esm --external:playwright
-```
-
----
-
-## T27: アプリ起動時の Copilot 自動接続
-
-### 目的
-setup 完了後のアプリ起動時に copilot_server + Edge を自動で起動する。
-ユーザーが何も操作しなくても Copilot 接続が確立される状態にする。
-
-### 対象ファイル
-- `src-tauri/src/lib.rs`
-- `src-tauri/src/vlm/copilot_server.rs`（関数追加）
-
-### 変更内容
-
-#### 1. src-tauri/src/vlm/copilot_server.rs に関数を追加
-
-ファイル末尾（`fn null_device_path()` の後）に追加:
-
-```rust
-use tauri::{AppHandle, Emitter};
-use crate::state::AppState;
-use crate::vlm::server::{update_vlm_state, CopilotConnectionStatus};
-
-/// アプリ起動時に Copilot サーバーと Edge を自動接続する。
-/// setup_complete かつ vlm_engine == "copilot" の場合のみ動作する。
-/// 失敗してもアプリの動作には影響しない（バッチ時に再試行される）。
-pub fn spawn_copilot_auto_connect(app: AppHandle, state: AppState) {
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = copilot_auto_connect(&app, &state).await {
-            eprintln!("[copilot] auto-connect failed (will retry at batch time): {error}");
+        if !response.status().is_success() {
+            // 既存のエラーハンドリングと同様（LoginRequired 検出含む）
+            ...
         }
+
+        let response = response.json::<serde_json::Value>().await?;
+        match extract_description(&response) {
+            Ok(text) => return Ok(text),
+            Err(error) if attempt + 1 < MAX_RETRIES && should_retry(&error) => {
+                let backoff = INITIAL_BACKOFF_MS * (1_u64 << attempt);
+                sleep(Duration::from_millis(backoff)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(VlmError::InvalidResponse("Text summarization exhausted all retries".to_string()))
+}
+```
+
+#### 3. L2 プロンプトテンプレート（models.rs）
+
+```rust
+pub fn default_hourly_summary_prompt() -> String {
+    concat!(
+        "以下は {start_time} から {end_time} の間の業務セッション記録です。\n\n",
+        "{sessions}\n\n",
+        "この時間帯の業務を2〜3文で要約してください。",
+        "使用したアプリケーション、主な操作内容、対象データを含めてください。",
+        "出力は自然な日本語の文章のみとし、箇条書きや JSON は使わないでください。"
+    ).to_string()
+}
+```
+
+`AppConfig` に `hourly_summary_prompt: String` フィールドを追加（デフォルト: `default_hourly_summary_prompt()`）。
+
+#### 4. 60分タイマー（scheduler.rs）
+
+`spawn_scheduler()` と並行して `spawn_hourly_summarizer()` を追加:
+
+```rust
+const HOURLY_SUMMARY_INTERVAL_SECS: u64 = 3600;
+
+pub fn spawn_hourly_summarizer(app: AppHandle, state: AppState) {
+    tauri::async_runtime::spawn(async move {
+        hourly_summarizer_loop(app, state).await;
     });
 }
 
-async fn copilot_auto_connect(app: &AppHandle, state: &AppState) -> Result<(), Box<dyn std::error::Error>> {
-    let (setup_complete, vlm_engine) = {
-        let config = state.config.lock().await;
-        (config.setup_complete, config.vlm_engine.clone())
-    };
+async fn hourly_summarizer_loop(app: AppHandle, state: AppState) {
+    // 次の正時まで待機（例: 現在 9:23 なら 10:00 まで待つ）
+    let initial_wait = secs_until_next_hour();
+    tokio::time::sleep(Duration::from_secs(initial_wait)).await;
 
-    if !setup_complete || vlm_engine != "copilot" {
-        return Ok(());
-    }
-
-    // UI 初期化を少し待つ
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-    // copilot_server プロセスを起動
-    let data_dir = state.app_paths.data_dir.clone();
-    {
-        let mut server = state.copilot_server.lock().await;
-        server.start(&data_dir).await?;
-    }
-
-    let snapshot = update_vlm_state(state, Some(true), None, None).await;
-    let _ = app.emit("vlm-status", &snapshot);
-
-    // /status を呼んでログイン状態を確認
-    let server_url = {
-        let server = state.copilot_server.lock().await;
-        server.server_url()
-    };
-
-    let status_result = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?
-        .get(format!("{server_url}/status"))
-        .send()
-        .await;
-
-    if let Ok(response) = status_result {
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct StatusResponse {
-            connected: bool,
-            login_required: bool,
-        }
-
-        if let Ok(status) = response.json::<StatusResponse>().await {
-            if status.login_required {
-                let _ = app.emit(
-                    "copilot-login-required",
-                    "Copilot にログインしてください。Edge の画面を確認してください。",
-                );
+    loop {
+        // バッチ実行中はスキップ
+        {
+            let vlm_state = state.vlm_state.lock().await;
+            if vlm_state.batch_running {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                continue;
             }
         }
+
+        // Copilot エンジンが有効な場合のみ実行
+        let config = state.config.lock().await.clone();
+        if config.vlm_engine == "copilot" && config.setup_complete {
+            if let Err(error) = generate_hourly_summary(&app, &state).await {
+                eprintln!("[hourly-summary] failed: {error}");
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(HOURLY_SUMMARY_INTERVAL_SECS)).await;
     }
+}
+
+fn secs_until_next_hour() -> u64 {
+    let now = chrono::Local::now();
+    let next_hour = (now + chrono::Duration::hours(1))
+        .with_minute(0).unwrap()
+        .with_second(0).unwrap();
+    (next_hour - now).num_seconds().max(0) as u64
+}
+```
+
+`generate_hourly_summary()` の実装:
+1. 前の60分間（例: 09:00〜10:00）の処理済みセッションを `get_sessions_in_period()` で取得
+2. セッションがなければスキップ
+3. `hourly_summary_exists()` で重複チェック
+4. Copilot エンジンを起動（`ensure_engine_running` 相当）
+5. セッション説明文を連結してプロンプトを構築
+6. `summarize_text()` を呼び出し
+7. `insert_hourly_summary()` で保存
+
+**lib.rs への追加:**
+
+`spawn_scheduler()` の直後に `spawn_hourly_summarizer()` を追加:
+```rust
+spawn_scheduler(app.handle().clone(), scheduler_state);
+spawn_hourly_summarizer(app.handle().clone(), hourly_state);
+```
+
+---
+
+## T52: Copilot リクエストキューによる競合防止
+
+### 目的
+L1（セッション説明文）、L2（時間帯要約）、L3（日次記録）の Copilot リクエストが同時に発生しないよう直列化する。
+
+### 対象ファイル
+- `src-tauri/src/state.rs`（セマフォ追加）
+- `src-tauri/src/vlm/batch.rs`（セマフォ利用）
+- `src-tauri/src/scheduler.rs`（セマフォ利用）
+
+### 変更内容
+
+#### 1. AppState にセマフォを追加（state.rs）
+
+```rust
+use tokio::sync::Semaphore;
+
+pub struct AppState {
+    // ... 既存フィールド ...
+    pub copilot_semaphore: Arc<Semaphore>,
+}
+```
+
+`AppState::new()` で初期化:
+```rust
+copilot_semaphore: Arc::new(Semaphore::new(1)),
+```
+
+#### 2. バッチ処理での利用（batch.rs）
+
+`vlm_batch_loop()` と `run_session_batch_loop()` 内の `describe_screenshot()` 呼び出しの前後でセマフォを acquire/release:
+
+```rust
+let _permit = state.copilot_semaphore.acquire().await
+    .map_err(|_| VlmError::InvalidResponse("semaphore closed".to_string()))?;
+let result = describe_screenshot(...).await;
+drop(_permit);
+```
+
+#### 3. 60分タイマーでの利用（scheduler.rs）
+
+`generate_hourly_summary()` 内の `summarize_text()` 呼び出し前にセマフォを acquire:
+
+```rust
+let _permit = state.copilot_semaphore.acquire().await
+    .map_err(|error| format!("semaphore: {error}"))?;
+let summary = summarize_text(...).await?;
+drop(_permit);
+```
+
+**注意:** `batch_running == true` の場合は60分タイマーをスキップするので、実際にはバッチとタイマーが同時にセマフォを取り合うことは少ない。セマフォは安全弁としての役割が主。
+
+---
+
+## T51: 日次記録の自動生成（L3: 12:00 / 17:45 バッチ）
+
+### 目的
+バッチ実行時に L1 → L2 → L3 の3段階処理を行い、日次記録を自動生成する。
+DEFAULT_BATCH_TIMES を 17:30 → 17:45 に変更する。
+
+### 対象ファイル
+- `src-tauri/src/scheduler.rs`（DEFAULT_BATCH_TIMES 変更 + バッチフロー拡張）
+- `src-tauri/src/config.rs`（マイグレーション追加）
+- `src-tauri/src/models.rs`（L3 プロンプト追加）
+- `src-tauri/src/vlm/batch.rs`（L2 + L3 処理を追加）
+
+### 変更内容
+
+#### 1. DEFAULT_BATCH_TIMES の変更（scheduler.rs）
+
+```rust
+// 変更前
+const DEFAULT_BATCH_TIMES: &[&str] = &["12:00", "17:30"];
+// 変更後
+const DEFAULT_BATCH_TIMES: &[&str] = &["12:00", "17:45"];
+```
+
+#### 2. config.rs にマイグレーション追加
+
+```rust
+// batch_times の 17:30 → 17:45 マイグレーション
+for time in &mut config.batch_times {
+    if time == "17:30" {
+        *time = "17:45".to_string();
+    }
+}
+```
+
+#### 3. L3 プロンプトテンプレート（models.rs）
+
+```rust
+pub fn default_daily_record_prompt() -> String {
+    concat!(
+        "以下は {date} の {period} の時間帯別業務要約です。\n\n",
+        "{summaries}\n\n",
+        "この期間の業務内容を3〜5文でまとめてください。",
+        "主な業務カテゴリ、使用アプリケーション、作業の流れを含めてください。",
+        "出力は自然な日本語の文章のみとし、箇条書きや JSON は使わないでください。"
+    ).to_string()
+}
+```
+
+`AppConfig` に `daily_record_prompt: String` フィールドを追加。
+
+#### 4. バッチフロー拡張（batch.rs + scheduler.rs）
+
+`run_scheduled_batch()` を拡張して3段階にする:
+
+```rust
+async fn run_scheduled_batch(app: AppHandle, state: AppState) -> Result<(), String> {
+    // Phase 1: 既存の L1 セッション説明文バッチ
+    let unprocessed_count = {
+        let db = state.db.lock().await;
+        count_unprocessed_captures(&db).map_err(|e| e.to_string())?
+    };
+    if unprocessed_count > 0 {
+        run_vlm_batch_inner(app.clone(), state.clone(), RunBatchRequest { ... }).await?;
+    }
+
+    // Phase 2: 未生成の L2 時間帯要約を回収
+    generate_pending_hourly_summaries(&app, &state).await?;
+
+    // Phase 3: L3 日次記録の生成
+    let batch_time = determine_current_batch_type(&state).await;
+    generate_daily_record(&app, &state, batch_time).await?;
 
     Ok(())
 }
 ```
 
-#### 2. src-tauri/src/lib.rs
-
-**import を追加:**
-```rust
-use vlm::copilot_server::spawn_copilot_auto_connect;
-```
-
-**setup() 内の spawn_scheduler() の直後に追加:**
+**L3 対象範囲の決定:**
 
 ```rust
-spawn_scheduler(app.handle().clone(), scheduler_state);
+enum BatchType {
+    Morning,   // 12:00 バッチ → 当日 00:00〜現在の全 L2 要約
+    Afternoon, // 17:45 バッチ → 当日 12:00〜現在の L2 要約
+}
 
-// Copilot 自動接続（setup 完了済みの場合）
-let auto_connect_state = app.state::<AppState>().inner().clone();
-spawn_copilot_auto_connect(app.handle().clone(), auto_connect_state);
+fn determine_current_batch_type(state: &AppState) -> BatchType {
+    let now = chrono::Local::now();
+    if now.hour() < 13 {
+        BatchType::Morning
+    } else {
+        BatchType::Afternoon
+    }
+}
 ```
 
-注意: `spawn_copilot_auto_connect` は `app.manage(state)` の後に呼ぶ必要がある。
-現在のコードでは `app.manage(state)` → `setup_tray()` → `spawn_scheduler()` の順なので、
-`spawn_scheduler()` の直後が適切。ただし `app.state::<AppState>()` で取得する。
+`generate_daily_record()` の実装:
+1. `BatchType` に応じて L2 要約の対象期間を決定
+   - Morning: `{today}T00:00:00` 〜 現在
+   - Afternoon: `{today}T12:00:00` 〜 現在
+2. `get_hourly_summaries_since()` で L2 要約を取得
+3. L2 要約を連結してプロンプトを構築
+4. `summarize_text()` で L3 を生成
+5. `insert_daily_record()` で保存
 
-もし `state` が `app.manage()` で consume されている場合は、事前に clone しておく:
+**テスト（scheduler.rs の既存テストを更新）:**
 
 ```rust
-let state = AppState::new(app.handle())?;
-let scheduler_state = state.clone();
-let auto_connect_state = state.clone();
-// ... (既存コード)
-app.manage(state);
-setup_tray(app.handle())?;
-spawn_scheduler(app.handle().clone(), scheduler_state);
-spawn_copilot_auto_connect(app.handle().clone(), auto_connect_state);
+#[test]
+fn next_run_at_uses_evening_batch_time_after_noon() {
+    let config = AppConfig {
+        batch_times: vec!["12:00".to_string(), "17:45".to_string()],
+        ..AppConfig::default()
+    };
+    // 17:30 → 17:45 に変更
+    ...
+}
 ```
-
-#### 3. vlm/copilot_server.rs の pub 関数をモジュールから export
-
-`spawn_copilot_auto_connect` が `lib.rs` からアクセスできるよう、
-`vlm/mod.rs` で必要に応じて re-export するか、
-`lib.rs` で `use vlm::copilot_server::spawn_copilot_auto_connect;` としてパスを通す。
 
 ---
 
-## T28: バックグラウンド接続ヘルスチェックと自動再接続
+## T53: セッション説明文へのアプリ名付与とログ出力の説明文単位化
 
 ### 目的
-60 秒間隔で Copilot 接続を監視し、切断時に自動復旧、ログイン切れを即座に通知する。
+1. セッションバッチ時にセッション内キャプチャのアプリ名上位をプロンプトに含める
+2. CSV エクスポートにセッション単位出力モードを追加する
 
 ### 対象ファイル
-- `src-tauri/src/vlm/copilot_server.rs`
+- `src-tauri/src/db.rs`（アプリ集計クエリ追加）
+- `src-tauri/src/vlm/batch.rs`（PromptContext にアプリ名を渡す）
+- `src-tauri/src/export.rs`（セッション単位出力追加）
+- `src/lib/settings/ExportCard.svelte`（UIオプション追加）
 
 ### 変更内容
 
-#### 1. spawn_copilot_auto_connect() の末尾でヘルスモニターを起動
-
-`copilot_auto_connect()` の成功後（または失敗後でも）にヘルスモニターを起動:
+#### 1. アプリ名集計クエリ（db.rs）
 
 ```rust
-pub fn spawn_copilot_auto_connect(app: AppHandle, state: AppState) {
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = copilot_auto_connect(&app, &state).await {
-            eprintln!("[copilot] auto-connect failed (will retry at batch time): {error}");
-        }
+/// セッション内のキャプチャからアプリ名上位 N 件を取得
+pub fn get_top_apps_for_session(
+    conn: &Connection,
+    session_id: &str,
+    limit: usize,
+) -> Result<Vec<String>, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT app, COUNT(*) as cnt
+         FROM captures
+         WHERE session_id = ?1 AND app != 'Unknown'
+         GROUP BY app
+         ORDER BY cnt DESC
+         LIMIT ?2"
+    )?;
+    let rows = stmt.query_map(
+        params![session_id, limit as i64],
+        |row| row.get::<_, String>(0),
+    )?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(DbError::from)
+}
 
-        // ヘルスモニターは auto-connect の成否に関わらず開始
-        let (setup_complete, vlm_engine) = {
-            let config = state.config.lock().await;
-            (config.setup_complete, config.vlm_engine.clone())
-        };
-        if setup_complete && vlm_engine == "copilot" {
-            copilot_health_monitor_loop(&app, &state).await;
-        }
-    });
+/// セッション内の主要ウィンドウタイトル上位 N 件を取得
+pub fn get_top_window_titles_for_session(
+    conn: &Connection,
+    session_id: &str,
+    limit: usize,
+) -> Result<Vec<String>, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT window_title, COUNT(*) as cnt
+         FROM captures
+         WHERE session_id = ?1 AND window_title != 'Unknown'
+         GROUP BY window_title
+         ORDER BY cnt DESC
+         LIMIT ?2"
+    )?;
+    let rows = stmt.query_map(
+        params![session_id, limit as i64],
+        |row| row.get::<_, String>(0),
+    )?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(DbError::from)
 }
 ```
 
-#### 2. copilot_health_monitor_loop() を追加
+#### 2. PromptContext にアプリ名を渡す（batch.rs）
+
+`run_session_batch_loop()` 内のセッション処理ループで:
 
 ```rust
-const HEALTH_MONITOR_INTERVAL_SECS: u64 = 60;
+// 変更前
+PromptContext {
+    app: None,
+    window_title: None,
+    system_prompt: Some(&config.system_prompt),
+    user_prompt: Some(&user_prompt),
+}
 
-/// 60 秒間隔で copilot_server + Edge の接続を監視する。
-/// 切断時に自動再起動、ログイン切れ時にフロントエンドに通知する。
-async fn copilot_health_monitor_loop(app: &AppHandle, state: &AppState) {
-    #[derive(PartialEq, Clone)]
-    enum ConnectionState {
-        Connected,
-        LoginRequired,
-        Disconnected,
-    }
+// 変更後
+let top_apps = {
+    let db = state.db.lock().await;
+    get_top_apps_for_session(&db, &session.id, 3)
+        .unwrap_or_default()
+        .join(", ")
+};
+let top_titles = {
+    let db = state.db.lock().await;
+    get_top_window_titles_for_session(&db, &session.id, 3)
+        .unwrap_or_default()
+        .join(", ")
+};
 
-    let mut last_state = ConnectionState::Disconnected;
-
-    loop {
-        tokio::time::sleep(std::time::Duration::from_secs(HEALTH_MONITOR_INTERVAL_SECS)).await;
-
-        // バッチ実行中はスキップ（batch.rs が自前でリトライする）
-        {
-            let vlm_state = state.vlm_state.lock().await;
-            if vlm_state.batch_running {
-                continue;
-            }
-        }
-
-        // エンジンが copilot でなくなった場合は終了
-        {
-            let config = state.config.lock().await;
-            if config.vlm_engine != "copilot" {
-                break;
-            }
-        }
-
-        // ヘルスチェック
-        let healthy = {
-            let server = state.copilot_server.lock().await;
-            server.health_check().await.is_ok()
-        };
-
-        if !healthy {
-            // 自動再起動を試行
-            let data_dir = state.app_paths.data_dir.clone();
-            let restart_result = {
-                let mut server = state.copilot_server.lock().await;
-                server.start(&data_dir).await
-            };
-
-            match restart_result {
-                Ok(()) => {
-                    let snapshot = update_vlm_state(state, Some(true), None, None).await;
-                    let _ = app.emit("vlm-status", &snapshot);
-                    eprintln!("[copilot] health monitor: reconnected after disconnect");
-                }
-                Err(error) => {
-                    if last_state != ConnectionState::Disconnected {
-                        let snapshot = update_vlm_state(
-                            state,
-                            Some(false),
-                            None,
-                            Some(error.to_string()),
-                        )
-                        .await;
-                        let _ = app.emit("vlm-status", &snapshot);
-                        last_state = ConnectionState::Disconnected;
-                    }
-                    continue;
-                }
-            }
-        }
-
-        // /status でログイン状態を確認
-        let server_url = {
-            let server = state.copilot_server.lock().await;
-            server.server_url()
-        };
-
-        let current_state = match reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .ok()
-            .map(|c| c.get(format!("{server_url}/status")))
-        {
-            Some(request) => {
-                #[derive(serde::Deserialize)]
-                #[serde(rename_all = "camelCase")]
-                struct StatusResponse {
-                    connected: bool,
-                    login_required: bool,
-                }
-
-                match request.send().await {
-                    Ok(response) => match response.json::<StatusResponse>().await {
-                        Ok(status) if status.login_required => ConnectionState::LoginRequired,
-                        Ok(status) if status.connected => ConnectionState::Connected,
-                        _ => ConnectionState::Disconnected,
-                    },
-                    Err(_) => ConnectionState::Disconnected,
-                }
-            }
-            None => ConnectionState::Disconnected,
-        };
-
-        // 状態が変化した場合のみイベントを emit
-        if current_state != last_state {
-            match &current_state {
-                ConnectionState::LoginRequired => {
-                    let _ = app.emit(
-                        "copilot-login-required",
-                        "Copilot にログインしてください。Edge の画面を確認してください。",
-                    );
-                }
-                ConnectionState::Connected => {
-                    let snapshot = update_vlm_state(state, Some(true), None, None).await;
-                    let _ = app.emit("vlm-status", &snapshot);
-                }
-                ConnectionState::Disconnected => {
-                    // すでに上の再起動失敗で emit 済み
-                }
-            }
-            last_state = current_state;
-        }
-    }
+PromptContext {
+    app: if top_apps.is_empty() { None } else { Some(&top_apps) },
+    window_title: if top_titles.is_empty() { None } else { Some(&top_titles) },
+    system_prompt: Some(&config.system_prompt),
+    user_prompt: Some(&user_prompt),
 }
 ```
 
-### 注意事項
+#### 3. セッション単位 CSV エクスポート（export.rs）
 
-- `StatusResponse` 構造体が T27 と T28 で重複するので、ファイル上部に 1 つだけ定義するか、
-  `CopilotConnectionStatusResponse`（server.rs に既存）を re-use すること。
-  既存の `CopilotConnectionStatusResponse` を `pub` にして `use` するのが最もクリーン。
+`ExportFilter` に追加:
+```rust
+pub struct ExportFilter {
+    // ... 既存フィールド ...
+    pub group_by_session: bool,
+}
+```
 
-- `update_vlm_state` は `crate::vlm::server` から import する（T27 で既に追加済み）。
+セッション単位エクスポート関数を追加:
+```rust
+fn export_sessions_csv(
+    conn: &Connection,
+    filter: &ExportFilter,
+    writer: &mut Writer<File>,
+) -> Result<usize, ExportError> {
+    // ヘッダー: session_id, start_time, end_time, duration_min, primary_app, description
+    writer.write_record(&[
+        "session_id", "start_time", "end_time", "duration_min", "primary_app", "description",
+    ])?;
 
-- ヘルスモニターは無限ループなので、アプリ終了時は `tauri::async_runtime` が自動的にキャンセルする。
-  明示的なシャットダウン処理は不要。
+    let sessions = query_sessions_filtered(conn, filter)?;
+    for session in &sessions {
+        let primary_app = get_top_apps_for_session(conn, &session.id, 1)
+            .unwrap_or_default()
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        let duration = calc_duration_min(&session.start_time, &session.end_time);
+        writer.write_record(&[
+            &session.id,
+            &session.start_time,
+            &session.end_time,
+            &duration.to_string(),
+            &primary_app,
+            session.description.as_deref().unwrap_or(""),
+        ])?;
+    }
+
+    Ok(sessions.len())
+}
+```
+
+#### 4. フロントエンド（ExportCard.svelte）
+
+エクスポート画面に「出力単位」の切り替えオプションを追加:
+- ラジオボタン: 「キャプチャ単位」（既存） / 「セッション単位」（新規）
+- デフォルト: 「セッション単位」
 
 ---
 
 ## 完了条件チェックリスト
 
+### T50: L2 時間帯要約
+- [ ] DB マイグレーション（hourly_summaries, daily_records テーブル）が正常に実行される
+- [ ] `summarize_text()` が画像なしテキストのみリクエストを送信する
+- [ ] 60分ごとにタイマーが発火し、L2 要約が生成・保存される
+- [ ] `batch_running == true` の場合はタイマーがスキップされる
+- [ ] セッション説明文がない時間帯はスキップされる
+
+### T52: Copilot リクエストキュー
+- [ ] `copilot_semaphore` が AppState に追加されている
+- [ ] Copilot へのリクエストがセマフォで直列化されている
+- [ ] L1 と L2 が同時に Copilot に送信されない
+
+### T51: L3 日次記録
+- [ ] DEFAULT_BATCH_TIMES が `["12:00", "17:45"]` になっている
+- [ ] config.rs で "17:30" → "17:45" のマイグレーションが実行される
+- [ ] 12:00 バッチで当日全体の L2 要約を基に L3 が生成される
+- [ ] 17:45 バッチで 12:00 以降の L2 要約を基に L3 が生成される
+- [ ] バッチが L1 → L2 → L3 の順で実行される
+- [ ] 既存テストが 17:45 に更新されている
+
+### T53: アプリ名付与とログ単位化
+- [ ] セッション説明文のプロンプトにアプリ名上位3件が含まれる
+- [ ] CSV エクスポートでセッション単位出力が動作する
+- [ ] 既存のキャプチャ単位出力に影響がない
 - [ ] `cargo check` がエラーなしで通過する
 - [ ] `cargo test` が全テスト通過する
-- [ ] `pnpm build` がエラーなしで通過する（esbuild バンドル含む）
-- [ ] copilot_server.ts が `--user-data-dir` 引数を受け取れる
-- [ ] `launchEdgeForCdp()` で `--user-data-dir` が Edge 起動引数に含まれる
-- [ ] models.rs の edge_cdp_port デフォルトが 9333 になっている
-- [ ] config.rs で 9222 → 9333 のマイグレーションが実行される
-- [ ] lib.rs の setup() で spawn_copilot_auto_connect() が呼ばれている
-- [ ] setup_complete && vlm_engine == "copilot" 時にアプリ起動で copilot_server が自動起動する
-- [ ] 60 秒間隔のヘルスチェックループが動作する
-- [ ] ヘルスチェック失敗時に copilot_server が自動再起動される
-- [ ] ログイン切れ検出時に copilot-login-required イベントが emit される
-- [ ] バッチ実行中はヘルスモニターがスキップされる

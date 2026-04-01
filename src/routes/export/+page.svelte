@@ -10,6 +10,7 @@
     apps: string[] | null;
     only_processed: boolean;
     apply_masking: boolean;
+    group_by_session: boolean;
   };
 
   type CaptureAppGroup = {
@@ -37,7 +38,8 @@
     end_date: today,
     apps: null,
     only_processed: true,
-    apply_masking: true
+    apply_masking: true,
+    group_by_session: true
   });
   let options = $state<ExportOptions>({ apps: [] });
   let previewCount = $state(0);
@@ -182,7 +184,7 @@
         </div>
         <h2 class="text-3xl font-bold text-ink-900">CSV エクスポート</h2>
         <p class="max-w-2xl text-sm leading-7 text-ink-500 sm:text-base">
-          日付範囲、対象アプリ、説明文つきのみの条件を組み合わせて CSV を出力します。
+          日付範囲、対象アプリ、出力単位、説明文つきのみの条件を組み合わせて CSV を出力します。
           件数プレビューは条件変更のたびに更新されます。
         </p>
       </div>
@@ -229,6 +231,45 @@
       {#if dateRangeError}
         <p class="mt-3 text-sm text-cinnabar-700">{dateRangeError}</p>
       {/if}
+
+      <div class="mt-5 rounded-[1.5rem] border border-ink-100 bg-ink-50/70 px-4 py-4">
+        <p class="text-sm font-medium text-ink-700">出力単位</p>
+        <p class="mt-1 text-sm text-ink-500">作業のまとまりで見たい場合はセッション単位が向いています。</p>
+        <div class="mt-4 grid gap-3 sm:grid-cols-2">
+          <label class="flex cursor-pointer items-center gap-3 rounded-2xl border border-ink-100 bg-white px-4 py-3">
+            <input
+              class="h-4 w-4 accent-brass-600"
+              type="radio"
+              name="group-by"
+              checked={filter.group_by_session}
+              onchange={() => {
+                filter = { ...filter, group_by_session: true };
+                void refreshPreviewCount();
+              }}
+            />
+            <div>
+              <p class="text-sm font-medium text-ink-700">セッション単位</p>
+              <p class="mt-1 text-xs text-ink-400">開始時刻から終了時刻までを 1 行で出力します。</p>
+            </div>
+          </label>
+          <label class="flex cursor-pointer items-center gap-3 rounded-2xl border border-ink-100 bg-white px-4 py-3">
+            <input
+              class="h-4 w-4 accent-brass-600"
+              type="radio"
+              name="group-by"
+              checked={!filter.group_by_session}
+              onchange={() => {
+                filter = { ...filter, group_by_session: false };
+                void refreshPreviewCount();
+              }}
+            />
+            <div>
+              <p class="text-sm font-medium text-ink-700">キャプチャ単位</p>
+              <p class="mt-1 text-xs text-ink-400">従来どおりスクリーンショットごとに 1 行で出力します。</p>
+            </div>
+          </label>
+        </div>
+      </div>
 
       <label class="mt-5 flex items-center justify-between rounded-2xl border border-ink-100 px-4 py-4">
         <div>
@@ -338,6 +379,7 @@
           <span class="font-semibold text-ink-900">アプリ:</span>
           {filter.apps?.join(", ") ?? "すべて"}
         </p>
+        <p><span class="font-semibold text-ink-900">出力単位:</span> {filter.group_by_session ? "セッション単位" : "キャプチャ単位"}</p>
         <p><span class="font-semibold text-ink-900">処理条件:</span> {filter.only_processed ? "説明文つきのみ" : "すべて含む"}</p>
       </div>
 

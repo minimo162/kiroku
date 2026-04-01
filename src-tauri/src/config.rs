@@ -8,7 +8,10 @@ use tauri_plugin_dialog::DialogExt;
 use thiserror::Error;
 
 use crate::{
-    models::{default_session_user_prompt, default_system_prompt, default_user_prompt, AppConfig},
+    models::{
+        default_daily_record_prompt, default_hourly_summary_prompt, default_session_user_prompt,
+        default_system_prompt, default_user_prompt, AppConfig,
+    },
     recorder::{start_recording_inner, stop_recording_inner},
     state::AppState,
     vlm::{
@@ -111,6 +114,11 @@ fn migrate_default_prompts(config: &mut AppConfig) {
         "出力は自然な日本語の文章のみとし、箇条書きや JSON は使わないでください。"
     );
 
+    for time in &mut config.batch_times {
+        if time == "17:30" {
+            *time = "17:45".to_string();
+        }
+    }
     if config.capture_interval_secs == LEGACY_CAPTURE_INTERVAL_SECS {
         config.capture_interval_secs = AppConfig::default().capture_interval_secs;
     }
@@ -131,6 +139,12 @@ fn migrate_default_prompts(config: &mut AppConfig) {
         || config.session_user_prompt == PREVIOUS_SESSION_USER_PROMPT
     {
         config.session_user_prompt = default_session_user_prompt();
+    }
+    if config.hourly_summary_prompt.trim().is_empty() {
+        config.hourly_summary_prompt = default_hourly_summary_prompt();
+    }
+    if config.daily_record_prompt.trim().is_empty() {
+        config.daily_record_prompt = default_daily_record_prompt();
     }
 }
 
@@ -325,7 +339,7 @@ mod tests {
         assert_eq!(config.capture_interval_secs, 10);
         assert_eq!(
             config.batch_times,
-            vec!["12:00".to_string(), "17:30".to_string()]
+            vec!["12:00".to_string(), "17:45".to_string()]
         );
 
         fs::remove_dir_all(&data_dir).expect("temporary config directory should be removed");

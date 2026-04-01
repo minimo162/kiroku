@@ -14,6 +14,7 @@ use tauri_plugin_dialog::DialogExt;
 use thiserror::Error;
 
 use crate::db::{list_capture_apps, query_captures_filtered, CaptureAppGroup, DbError};
+use crate::db::{get_top_apps_for_session, query_sessions_filtered};
 use crate::models::MaskRule;
 use crate::state::AppState;
 
@@ -24,6 +25,7 @@ pub struct ExportFilter {
     pub apps: Option<Vec<String>>,
     pub only_processed: bool,
     pub apply_masking: bool,
+    pub group_by_session: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -84,19 +86,11 @@ pub fn export_to_csv(
     file.write_all(&[0xEF, 0xBB, 0xBF])?;
 
     let mut writer = Writer::from_writer(file);
-    writer.write_record(["timestamp", "app", "window_title", "description"])?;
-
-    let count = records.len();
-    for record in records {
-        let window_title = apply_mask_rules(&record.window_title, mask_rules)?;
-        let description = apply_mask_rules(
-            record.description.as_deref().unwrap_or_default(),
-            mask_rules,
-        )?;
-        validate_text_for_export(&record.id, &window_title)?;
-        validate_text_for_export(&record.id, &description)?;
-        writer.write_record([record.timestamp, record.app, window_title, description])?;
-    }
+    let count = if filter.group_by_session {
+        export_sessions_csv(conn, filter, &mut writer, mask_rules)?
+    } else {
+        export_captures_csv(&records, &mut writer, mask_rules)?
+    };
 
     writer.flush()?;
     Ok(count)
@@ -108,16 +102,100 @@ pub fn preview_export_count(
 ) -> Result<ExportPreview, ExportError> {
     validate_filter(filter)?;
 
-    let count = query_captures_filtered(
+    let count = if filter.group_by_session {
+        query_sessions_filtered(
+            conn,
+            filter.start_date.as_deref(),
+            filter.end_date.as_deref(),
+            filter.apps.as_deref(),
+            filter.only_processed,
+        )?
+        .len()
+    } else {
+        query_captures_filtered(
+            conn,
+            filter.start_date.as_deref(),
+            filter.end_date.as_deref(),
+            filter.apps.as_deref(),
+            filter.only_processed,
+        )?
+        .len()
+    };
+
+    Ok(ExportPreview { count })
+}
+
+fn export_captures_csv(
+    records: &[crate::db::StoredCaptureRecord],
+    writer: &mut Writer<File>,
+    mask_rules: &[MaskRule],
+) -> Result<usize, ExportError> {
+    writer.write_record(["timestamp", "app", "window_title", "description"])?;
+
+    for record in records {
+        let window_title = apply_mask_rules(&record.window_title, mask_rules)?;
+        let description = apply_mask_rules(
+            record.description.as_deref().unwrap_or_default(),
+            mask_rules,
+        )?;
+        validate_text_for_export(&record.id, &window_title)?;
+        validate_text_for_export(&record.id, &description)?;
+        writer.write_record([
+            record.timestamp.as_str(),
+            record.app.as_str(),
+            window_title.as_str(),
+            description.as_str(),
+        ])?;
+    }
+
+    Ok(records.len())
+}
+
+fn export_sessions_csv(
+    conn: &Connection,
+    filter: &ExportFilter,
+    writer: &mut Writer<File>,
+    mask_rules: &[MaskRule],
+) -> Result<usize, ExportError> {
+    writer.write_record([
+        "session_id",
+        "start_time",
+        "end_time",
+        "duration_min",
+        "primary_app",
+        "description",
+    ])?;
+
+    let sessions = query_sessions_filtered(
         conn,
         filter.start_date.as_deref(),
         filter.end_date.as_deref(),
         filter.apps.as_deref(),
         filter.only_processed,
-    )?
-    .len();
+    )?;
 
-    Ok(ExportPreview { count })
+    for session in &sessions {
+        let primary_app = get_top_apps_for_session(conn, &session.id, 1)
+            .unwrap_or_default()
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        let duration = calc_duration_min(&session.start_time, &session.end_time).to_string();
+        let description =
+            apply_mask_rules(session.description.as_deref().unwrap_or_default(), mask_rules)?;
+        validate_text_for_export(&session.id, &primary_app)?;
+        validate_text_for_export(&session.id, &description)?;
+        writer.write_record([
+            session.id.as_str(),
+            session.start_time.as_str(),
+            session.end_time.as_str(),
+            duration.as_str(),
+            primary_app.as_str(),
+            description.as_str(),
+        ])?;
+    }
+
+    Ok(sessions.len())
 }
 
 #[tauri::command]
@@ -187,6 +265,17 @@ fn validate_filter(filter: &ExportFilter) -> Result<(), ExportError> {
 
 fn default_export_file_name() -> String {
     format!("kiroku_export_{}.csv", Local::now().format("%Y%m%d"))
+}
+
+fn calc_duration_min(start: &str, end: &str) -> i64 {
+    let Ok(start) = chrono::DateTime::parse_from_rfc3339(start) else {
+        return 0;
+    };
+    let Ok(end) = chrono::DateTime::parse_from_rfc3339(end) else {
+        return 0;
+    };
+
+    (end - start).num_minutes().max(0)
 }
 
 fn validate_text_for_export(capture_id: &str, text: &str) -> Result<(), ExportError> {
@@ -324,6 +413,7 @@ mod tests {
                 apps: Some(vec!["excel.exe".to_string()]),
                 only_processed: true,
                 apply_masking: false,
+                group_by_session: false,
             },
         )
         .expect("preview should succeed");
@@ -351,6 +441,7 @@ mod tests {
                 apps: None,
                 only_processed: false,
                 apply_masking: false,
+                group_by_session: false,
             },
             &output_path,
             &[],
@@ -418,6 +509,7 @@ mod tests {
             &conn,
             &ExportFilter {
                 apply_masking: true,
+                group_by_session: false,
                 ..ExportFilter::default()
             },
             &output_path,

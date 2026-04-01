@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use crate::models::CaptureRecord;
 
-const DB_SCHEMA_VERSION: i32 = 3;
+const DB_SCHEMA_VERSION: i32 = 4;
 
 #[derive(Debug, Error)]
 pub enum DbError {
@@ -60,6 +60,26 @@ pub struct SessionRecord {
     pub processed: bool,
     pub capture_count: i64,
     pub frame_count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HourlySummaryRecord {
+    pub id: String,
+    pub period_start: String,
+    pub period_end: String,
+    pub source_session_ids: String,
+    pub summary: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DailyRecord {
+    pub id: String,
+    pub record_date: String,
+    pub period_type: String,
+    pub source_summary_ids: String,
+    pub record: String,
+    pub created_at: String,
 }
 
 pub fn initialize_db(db_path: &Path) -> Result<Connection, DbError> {
@@ -193,6 +213,39 @@ pub fn get_unprocessed_sessions(conn: &Connection) -> Result<Vec<SessionRecord>,
     Ok(sessions)
 }
 
+pub fn get_sessions_in_period(
+    conn: &Connection,
+    period_start: &str,
+    period_end: &str,
+) -> Result<Vec<SessionRecord>, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, start_time, end_time, collage_path, description, processed, capture_count, frame_count
+         FROM sessions
+         WHERE processed = 1
+           AND description IS NOT NULL
+           AND start_time >= ?1
+           AND start_time < ?2
+         ORDER BY start_time ASC",
+    )?;
+    let rows = stmt.query_map(params![period_start, period_end], |row| {
+        Ok(SessionRecord {
+            id: row.get(0)?,
+            start_time: row.get(1)?,
+            end_time: row.get(2)?,
+            collage_path: row.get(3)?,
+            description: row.get(4)?,
+            processed: row.get::<_, i64>(5)? != 0,
+            capture_count: row.get(6)?,
+            frame_count: row.get(7)?,
+        })
+    })?;
+    let mut sessions = Vec::new();
+    for row in rows {
+        sessions.push(row?);
+    }
+    Ok(sessions)
+}
+
 pub fn mark_session_processed(
     conn: &Connection,
     id: &str,
@@ -229,6 +282,125 @@ pub fn set_session_collage_path(
         params![id, collage_path],
     )?;
     Ok(())
+}
+
+pub fn hourly_summary_exists(
+    conn: &Connection,
+    period_start: &str,
+    period_end: &str,
+) -> Result<bool, DbError> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM hourly_summaries WHERE period_start = ?1 AND period_end = ?2",
+        params![period_start, period_end],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+pub fn insert_hourly_summary(
+    conn: &Connection,
+    id: &str,
+    period_start: &str,
+    period_end: &str,
+    source_session_ids: &str,
+    summary: &str,
+) -> Result<(), DbError> {
+    conn.execute(
+        "INSERT INTO hourly_summaries (id, period_start, period_end, source_session_ids, summary)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, period_start, period_end, source_session_ids, summary],
+    )?;
+    Ok(())
+}
+
+pub fn get_hourly_summaries_since(
+    conn: &Connection,
+    since: &str,
+) -> Result<Vec<HourlySummaryRecord>, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, period_start, period_end, source_session_ids, summary, created_at
+         FROM hourly_summaries
+         WHERE period_start >= ?1
+         ORDER BY period_start ASC",
+    )?;
+    let rows = stmt.query_map(params![since], |row| {
+        Ok(HourlySummaryRecord {
+            id: row.get(0)?,
+            period_start: row.get(1)?,
+            period_end: row.get(2)?,
+            source_session_ids: row.get(3)?,
+            summary: row.get(4)?,
+            created_at: row.get(5)?,
+        })
+    })?;
+    let mut summaries = Vec::new();
+    for row in rows {
+        summaries.push(row?);
+    }
+    Ok(summaries)
+}
+
+pub fn daily_record_exists(
+    conn: &Connection,
+    record_date: &str,
+    period_type: &str,
+) -> Result<bool, DbError> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM daily_records WHERE record_date = ?1 AND period_type = ?2",
+        params![record_date, period_type],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+pub fn insert_daily_record(
+    conn: &Connection,
+    id: &str,
+    record_date: &str,
+    period_type: &str,
+    source_summary_ids: &str,
+    record: &str,
+) -> Result<(), DbError> {
+    conn.execute(
+        "INSERT INTO daily_records (id, record_date, period_type, source_summary_ids, record)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, record_date, period_type, source_summary_ids, record],
+    )?;
+    Ok(())
+}
+
+pub fn get_top_apps_for_session(
+    conn: &Connection,
+    session_id: &str,
+    limit: usize,
+) -> Result<Vec<String>, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT app, COUNT(*) as cnt
+         FROM captures
+         WHERE session_id = ?1 AND app != 'Unknown'
+         GROUP BY app
+         ORDER BY cnt DESC, app ASC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![session_id, limit as i64], |row| row.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(DbError::from)
+}
+
+pub fn get_top_window_titles_for_session(
+    conn: &Connection,
+    session_id: &str,
+    limit: usize,
+) -> Result<Vec<String>, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT window_title, COUNT(*) as cnt
+         FROM captures
+         WHERE session_id = ?1 AND window_title != 'Unknown'
+         GROUP BY window_title
+         ORDER BY cnt DESC, window_title ASC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![session_id, limit as i64], |row| row.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(DbError::from)
 }
 
 pub fn get_captures_for_session_assembly(conn: &Connection) -> Result<Vec<CaptureRecord>, DbError> {
@@ -342,6 +514,65 @@ pub fn query_captures_filtered(
     }
 
     Ok(captures)
+}
+
+pub fn query_sessions_filtered(
+    conn: &Connection,
+    start_date: Option<&str>,
+    end_date: Option<&str>,
+    apps: Option<&[String]>,
+    only_processed: bool,
+) -> Result<Vec<SessionRecord>, DbError> {
+    let mut sql = String::from(
+        "SELECT id, start_time, end_time, collage_path, description, processed, capture_count, frame_count
+         FROM sessions
+         WHERE 1 = 1",
+    );
+    let mut params = Vec::<String>::new();
+
+    if only_processed {
+        sql.push_str(" AND processed = 1");
+    }
+    if let Some(start_date) = start_date {
+        sql.push_str(" AND substr(start_time, 1, 10) >= ?");
+        params.push(start_date.to_string());
+    }
+    if let Some(end_date) = end_date {
+        sql.push_str(" AND substr(start_time, 1, 10) <= ?");
+        params.push(end_date.to_string());
+    }
+    if let Some(apps) = apps.filter(|apps| !apps.is_empty()) {
+        sql.push_str(" AND EXISTS (SELECT 1 FROM captures WHERE captures.session_id = sessions.id AND captures.app IN (");
+        sql.push_str(&vec!["?"; apps.len()].join(","));
+        sql.push_str("))");
+        params.extend(apps.iter().cloned());
+    }
+
+    sql.push_str(" ORDER BY start_time ASC");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        params_from_iter(params.iter().map(|value| value as &dyn ToSql)),
+        |row| {
+            Ok(SessionRecord {
+                id: row.get(0)?,
+                start_time: row.get(1)?,
+                end_time: row.get(2)?,
+                collage_path: row.get(3)?,
+                description: row.get(4)?,
+                processed: row.get::<_, i64>(5)? != 0,
+                capture_count: row.get(6)?,
+                frame_count: row.get(7)?,
+            })
+        },
+    )?;
+
+    let mut sessions = Vec::new();
+    for row in rows {
+        sessions.push(row?);
+    }
+
+    Ok(sessions)
 }
 
 pub fn search_captures(
@@ -732,7 +963,7 @@ fn apply_migrations(conn: &Connection) -> Result<(), DbError> {
                 ON capture_description_history(capture_id, edited_at DESC);
             ",
         )?;
-        conn.pragma_update(None, "user_version", DB_SCHEMA_VERSION)?;
+        conn.pragma_update(None, "user_version", 2)?;
     }
 
     if version < 3 {
@@ -754,6 +985,35 @@ fn apply_migrations(conn: &Connection) -> Result<(), DbError> {
             );
             CREATE INDEX IF NOT EXISTS idx_sessions_processed ON sessions(processed);
             CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON sessions(start_time);
+            ",
+        )?;
+        conn.pragma_update(None, "user_version", 3)?;
+    }
+
+    if version < 4 {
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS hourly_summaries (
+                id TEXT PRIMARY KEY,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                source_session_ids TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_hourly_summaries_period
+                ON hourly_summaries(period_start);
+
+            CREATE TABLE IF NOT EXISTS daily_records (
+                id TEXT PRIMARY KEY,
+                record_date TEXT NOT NULL,
+                period_type TEXT NOT NULL,
+                source_summary_ids TEXT NOT NULL,
+                record TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_daily_records_date
+                ON daily_records(record_date);
             ",
         )?;
         conn.pragma_update(None, "user_version", DB_SCHEMA_VERSION)?;
