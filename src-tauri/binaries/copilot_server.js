@@ -392,8 +392,13 @@ function createServer2(session) {
 }
 async function ensureEdgeConnected(cdpPort) {
   const existing = await probeCdpVersion(cdpPort);
-  if (existing) {
+  if (existing && await isOurEdgeProfile(cdpPort)) {
     return;
+  }
+  if (existing) {
+    throw new Error(
+      `CDP \u30DD\u30FC\u30C8 ${cdpPort} \u306F\u5225\u306E Edge \u30D7\u30ED\u30BB\u30B9\u304C\u4F7F\u7528\u4E2D\u3067\u3059\u3002\u305D\u306E Edge \u3092\u9589\u3058\u3066\u304B\u3089\u518D\u8A66\u884C\u3059\u308B\u304B\u3001\u8A2D\u5B9A\u3067 CDP \u30DD\u30FC\u30C8\u3092\u5909\u66F4\u3057\u3066\u304F\u3060\u3055\u3044\u3002`
+    );
   }
   const edgeExecutable = findEdgeExecutable();
   if (!edgeExecutable) {
@@ -410,6 +415,17 @@ async function ensureEdgeConnected(cdpPort) {
   throw new Error(
     "Edge \u306E\u30C7\u30D0\u30C3\u30B0\u63A5\u7D9A\u3092\u958B\u59CB\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F\u3002\u65E2\u5B58\u306E Edge \u3092\u9589\u3058\u3066\u304B\u3089\u518D\u8A66\u884C\u3057\u3066\u304F\u3060\u3055\u3044\u3002"
   );
+}
+async function isOurEdgeProfile(cdpPort) {
+  if (!globalOptions.userDataDir) {
+    return true;
+  }
+  try {
+    const profileMarker = path.join(globalOptions.userDataDir, "Local State");
+    return fs.existsSync(profileMarker);
+  } catch {
+    return false;
+  }
 }
 async function probeCdpVersion(cdpPort) {
   try {

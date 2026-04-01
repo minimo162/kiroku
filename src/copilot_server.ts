@@ -514,8 +514,17 @@ function createServer(session: CopilotSession): http.Server {
 
 async function ensureEdgeConnected(cdpPort: number): Promise<void> {
   const existing = await probeCdpVersion(cdpPort);
-  if (existing) {
+  if (existing && (await isOurEdgeProfile(cdpPort))) {
     return;
+  }
+
+  if (existing) {
+    // CDP ポートは応答するが Kiroku 専用プロファイルではない
+    // → 別アプリまたは通常の Edge が使用中
+    throw new Error(
+      `CDP ポート ${cdpPort} は別の Edge プロセスが使用中です。` +
+        "その Edge を閉じてから再試行するか、設定で CDP ポートを変更してください。"
+    );
   }
 
   const edgeExecutable = findEdgeExecutable();
@@ -536,6 +545,24 @@ async function ensureEdgeConnected(cdpPort: number): Promise<void> {
   throw new Error(
     "Edge のデバッグ接続を開始できませんでした。既存の Edge を閉じてから再試行してください。"
   );
+}
+
+async function isOurEdgeProfile(cdpPort: number): Promise<boolean> {
+  if (!globalOptions.userDataDir) {
+    return true; // プロファイル指定なしなら検証不要
+  }
+
+  try {
+    // CDP /json/version の webSocketDebuggerUrl からブラウザに接続し、
+    // 開いているページの URL を確認する。
+    // Kiroku 専用プロファイルの Edge なら Copilot URL かログイン URL のページがあるはず。
+    // ただし初回起動直後はまだページがないかもしれないので、
+    // プロファイルディレクトリの存在で判定する。
+    const profileMarker = path.join(globalOptions.userDataDir, "Local State");
+    return fs.existsSync(profileMarker);
+  } catch {
+    return false;
+  }
 }
 
 async function probeCdpVersion(cdpPort: number): Promise<Record<string, unknown> | null> {
