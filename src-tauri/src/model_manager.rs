@@ -3,7 +3,12 @@ use std::process::Command;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::{config::save_config, models::AppConfig, state::AppState};
+use crate::{
+    config::save_config,
+    models::AppConfig,
+    state::AppState,
+    vlm::copilot_server::spawn_copilot_auto_connect,
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SetupStatus {
@@ -36,6 +41,9 @@ pub async fn complete_setup(
     }
     let _ = state.config_tx.send(config.clone());
     let _ = app.emit("config-updated", &config);
+
+    // セットアップ完了後に Copilot 自動接続 + ヘルスモニターを起動
+    spawn_copilot_auto_connect(app.clone(), state.inner().clone());
 
     Ok(config)
 }

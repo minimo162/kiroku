@@ -65,34 +65,68 @@
 
     try {
       const connectionStatus = await invoke<CopilotConnectionStatus>("check_copilot_connection");
-      if (connectionStatus.connected || connectionStatus.login_required) {
-        message = "Edge に接続しました。M365 Copilot にログインして「次へ」を押してください。";
+      if (connectionStatus.connected) {
+        message = "Copilot に接続しました。";
         await loadStatus();
-        currentStep = "edge-setup";
+      } else if (connectionStatus.login_required) {
+        message = "Edge に接続しました。M365 Copilot にログインしてください...";
+        await loadStatus();
+        // ログイン完了を待つポーリングを開始
+        startLoginPoll();
       } else {
         message = "接続を待機しています...";
-        edgePollInterval = window.setInterval(async () => {
-          try {
-            const polledStatus = await invoke<CopilotConnectionStatus>("check_copilot_connection");
-            if (polledStatus.connected || polledStatus.login_required) {
-              if (edgePollInterval !== null) {
-                window.clearInterval(edgePollInterval);
-                edgePollInterval = null;
-              }
-              message = "Edge に接続しました。M365 Copilot にログインして「次へ」を押してください。";
-              await loadStatus();
-              currentStep = "edge-setup";
-            }
-          } catch {
-            // ポーリング中の一時的な失敗は無視する。
-          }
-        }, 2000);
+        startConnectionPoll();
       }
     } catch (error) {
       message = error instanceof Error ? error.message : String(error);
     } finally {
       launchingEdge = false;
     }
+  }
+
+  function startLoginPoll() {
+    if (edgePollInterval !== null) return;
+    edgePollInterval = window.setInterval(async () => {
+      try {
+        const s = await invoke<CopilotConnectionStatus>("check_copilot_connection");
+        if (s.connected) {
+          if (edgePollInterval !== null) {
+            window.clearInterval(edgePollInterval);
+            edgePollInterval = null;
+          }
+          message = "Copilot に接続しました。";
+          await loadStatus();
+        }
+      } catch {
+        // ポーリング中の一時的な失敗は無視する。
+      }
+    }, 3000);
+  }
+
+  function startConnectionPoll() {
+    edgePollInterval = window.setInterval(async () => {
+      try {
+        const s = await invoke<CopilotConnectionStatus>("check_copilot_connection");
+        if (s.connected) {
+          if (edgePollInterval !== null) {
+            window.clearInterval(edgePollInterval);
+            edgePollInterval = null;
+          }
+          message = "Copilot に接続しました。";
+          await loadStatus();
+        } else if (s.login_required) {
+          if (edgePollInterval !== null) {
+            window.clearInterval(edgePollInterval);
+            edgePollInterval = null;
+          }
+          message = "Edge に接続しました。M365 Copilot にログインしてください...";
+          await loadStatus();
+          startLoginPoll();
+        }
+      } catch {
+        // ポーリング中の一時的な失敗は無視する。
+      }
+    }, 2000);
   }
 
   async function runTestCapture() {
