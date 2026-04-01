@@ -114,6 +114,9 @@ fn migrate_default_prompts(config: &mut AppConfig) {
     if config.capture_interval_secs == LEGACY_CAPTURE_INTERVAL_SECS {
         config.capture_interval_secs = AppConfig::default().capture_interval_secs;
     }
+    if config.edge_cdp_port == 9222 {
+        config.edge_cdp_port = 9333;
+    }
     if config.batch_times.is_empty() {
         config.batch_times = AppConfig::default().batch_times;
     }

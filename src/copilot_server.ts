@@ -15,7 +15,7 @@ import {
 } from "playwright";
 
 const DEFAULT_PORT = 18080;
-const DEFAULT_CDP_PORT = 9222;
+const DEFAULT_CDP_PORT = 9333;
 const COPILOT_URL = "https://m365.cloud.microsoft/chat/";
 const INPUT_SELECTOR = "#m365-chat-editor-target-element, [data-lexical-editor=\"true\"]";
 const NEW_CHAT_BUTTON_SELECTOR = "[data-testid=\"newChatButton\"]";
@@ -575,21 +575,24 @@ function findEdgeExecutable(): string | null {
 }
 
 function launchEdgeForCdp(edgeExecutable: string, cdpPort: number): void {
-  const child = spawn(
-    edgeExecutable,
-    [
-      `--remote-debugging-port=${cdpPort}`,
-      "--remote-allow-origins=*",
-      "--no-first-run",
-      "--no-default-browser-check",
-      COPILOT_URL
-    ],
-    {
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true
-    }
-  );
+  const args = [
+    `--remote-debugging-port=${cdpPort}`,
+    "--remote-allow-origins=*",
+    "--no-first-run",
+    "--no-default-browser-check"
+  ];
+
+  if (globalOptions.userDataDir) {
+    args.push(`--user-data-dir=${globalOptions.userDataDir}`);
+  }
+
+  args.push(COPILOT_URL);
+
+  const child = spawn(edgeExecutable, args, {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true
+  });
   child.unref();
 }
 
@@ -676,12 +679,14 @@ function writeJson(res: ServerResponse, statusCode: number, body: unknown): void
 type ParsedArgs = {
   port: number;
   cdpPort: number;
+  userDataDir: string | null;
   help: boolean;
 };
 
 function parseArgs(argv: string[]): ParsedArgs {
   let port = DEFAULT_PORT;
   let cdpPort = DEFAULT_CDP_PORT;
+  let userDataDir: string | null = null;
   let help = false;
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -702,9 +707,15 @@ function parseArgs(argv: string[]): ParsedArgs {
       index += 1;
       continue;
     }
+
+    if (arg === "--user-data-dir") {
+      userDataDir = argv[index + 1] ?? null;
+      index += 1;
+      continue;
+    }
   }
 
-  return { port, cdpPort, help };
+  return { port, cdpPort, userDataDir, help };
 }
 
 function parsePort(value: string | undefined, flagName: string): number {
@@ -719,7 +730,9 @@ const globalOptions = parseArgs(process.argv.slice(2));
 
 async function main(): Promise<void> {
   if (globalOptions.help) {
-    console.error("Usage: node copilot_server.js [--port 18080] [--cdp-port 9222]");
+    console.error(
+      "Usage: node copilot_server.js [--port 18080] [--cdp-port 9333] [--user-data-dir <path>]"
+    );
     return;
   }
 

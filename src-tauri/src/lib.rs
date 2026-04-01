@@ -32,6 +32,7 @@ use scheduler::spawn_scheduler;
 use state::AppState;
 use tray::{handle_close_requested, setup_tray};
 use vlm::batch::{cancel_vlm_batch, pause_vlm_batch, resume_vlm_batch, run_vlm_batch};
+use vlm::copilot_server::spawn_copilot_auto_connect;
 use vlm::server::{check_copilot_connection, check_vlm_status, start_vlm_server, stop_vlm_server};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -43,12 +44,14 @@ pub fn run() {
         .setup(|app| {
             let state = AppState::new(app.handle())?;
             let scheduler_state = state.clone();
+            let auto_connect_state = state.clone();
             if let Err(error) = tauri::async_runtime::block_on(cleanup_capture_storage(&state)) {
                 eprintln!("startup capture cleanup failed: {error}");
             }
             app.manage(state);
             setup_tray(app.handle())?;
             spawn_scheduler(app.handle().clone(), scheduler_state);
+            spawn_copilot_auto_connect(app.handle().clone(), auto_connect_state);
             #[cfg(desktop)]
             {
                 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};

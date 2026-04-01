@@ -8,7 +8,7 @@ import {
   chromium
 } from "playwright";
 var DEFAULT_PORT = 18080;
-var DEFAULT_CDP_PORT = 9222;
+var DEFAULT_CDP_PORT = 9333;
 var COPILOT_URL = "https://m365.cloud.microsoft/chat/";
 var INPUT_SELECTOR = '#m365-chat-editor-target-element, [data-lexical-editor="true"]';
 var NEW_CHAT_BUTTON_SELECTOR = '[data-testid="newChatButton"]';
@@ -440,21 +440,21 @@ function findEdgeExecutable() {
   return null;
 }
 function launchEdgeForCdp(edgeExecutable, cdpPort) {
-  const child = spawn(
-    edgeExecutable,
-    [
-      `--remote-debugging-port=${cdpPort}`,
-      "--remote-allow-origins=*",
-      "--no-first-run",
-      "--no-default-browser-check",
-      COPILOT_URL
-    ],
-    {
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true
-    }
-  );
+  const args = [
+    `--remote-debugging-port=${cdpPort}`,
+    "--remote-allow-origins=*",
+    "--no-first-run",
+    "--no-default-browser-check"
+  ];
+  if (globalOptions.userDataDir) {
+    args.push(`--user-data-dir=${globalOptions.userDataDir}`);
+  }
+  args.push(COPILOT_URL);
+  const child = spawn(edgeExecutable, args, {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true
+  });
   child.unref();
 }
 async function readJsonBody(req) {
@@ -518,6 +518,7 @@ function writeJson(res, statusCode, body) {
 function parseArgs(argv) {
   let port = DEFAULT_PORT;
   let cdpPort = DEFAULT_CDP_PORT;
+  let userDataDir = null;
   let help = false;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -535,8 +536,13 @@ function parseArgs(argv) {
       index += 1;
       continue;
     }
+    if (arg === "--user-data-dir") {
+      userDataDir = argv[index + 1] ?? null;
+      index += 1;
+      continue;
+    }
   }
-  return { port, cdpPort, help };
+  return { port, cdpPort, userDataDir, help };
 }
 function parsePort(value, flagName) {
   const port = Number(value);
@@ -548,7 +554,9 @@ function parsePort(value, flagName) {
 var globalOptions = parseArgs(process.argv.slice(2));
 async function main() {
   if (globalOptions.help) {
-    console.error("Usage: node copilot_server.js [--port 18080] [--cdp-port 9222]");
+    console.error(
+      "Usage: node copilot_server.js [--port 18080] [--cdp-port 9333] [--user-data-dir <path>]"
+    );
     return;
   }
   const session = new CopilotSession();
