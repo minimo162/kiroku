@@ -1,432 +1,548 @@
-# Codex 実装指示: UI/UX 改善 — 初見でわかりやすい画面設計 (T21〜T25)
+# Codex 実装指示: Copilot 接続の完全自動化と競合回避 (T26〜T28)
 
 ## 方針
 
-- **既存デザインシステムを維持すること**: brass / ink / cinnabar パレット、
-  Noto Sans JP、glassmorphism パネル（backdrop-blur、rounded-[2rem]）は変えない
-- **Svelte 5 の $state / $derived を使うこと**（$store は使わない）
-- **cargo check / pnpm build でエラーがないこと**（Rust 側の変更なし）
-- 各タスクは独立して実装できる。T21 → T22 → T23 → T24 → T25 の順で実装すること
+- **T26 → T27 → T28 の順で実装すること**（依存関係あり）
+- `cargo check` でエラーがないことを確認してから次のタスクへ進むこと
+- 既存テスト（`cargo test`）が壊れないこと
+- copilot_server.ts の変更後は `npx esbuild src/copilot_server.ts --bundle --platform=node --outfile=src-tauri/binaries/copilot_server.js --format=esm --external:playwright` でバンドルすること
 
 ---
 
-## T21: サイドバーに記録状態インジケーターを追加
+## T26: Kiroku 専用 Edge プロファイルと非標準 CDP ポート
+
+### 目的
+他の Copilot 自動化ツールやユーザーの通常 Edge との競合を防ぐ。
+`--user-data-dir` で専用プロファイルを使い、CDP ポートを非標準に変更する。
 
 ### 対象ファイル
-`src/routes/+layout.svelte`
+- `src/copilot_server.ts`
+- `src-tauri/src/vlm/copilot_server.rs`
+- `src-tauri/src/models.rs`
+- `src-tauri/src/config.rs`
 
 ### 変更内容
 
-#### 1. script セクションに追加
+#### 1. src/copilot_server.ts
 
-既存の import 群の末尾に追加:
-```typescript
-import type { DashboardSnapshot } from "$lib/types/dashboard";
-```
-
-既存の `$state` 変数群の下に追加:
-```typescript
-let isRecording = $state(false);
-let nextBatchAt = $state<string | null>(null);
-```
-
-`formatNextBatch` 関数を追加:
-```typescript
-function formatNextBatch(iso: string | null): string {
-  if (!iso) return "";
-  const date = new Date(iso);
-  if (Number.isNaN(date.valueOf())) return iso;
-  return new Intl.DateTimeFormat("ja-JP", {
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(date);
-}
-```
-
-#### 2. onMount の非同期処理に追加
-
-`disposed = false;` の直後（既存の copilot-login-required リスナーの前）に追加:
-
-```typescript
-// 起動時の初期状態を取得
-void invoke<DashboardSnapshot>("get_dashboard_snapshot")
-  .then((snap) => {
-    if (!disposed) {
-      isRecording = snap.stats.is_recording;
-      nextBatchAt = snap.stats.next_batch_run_at;
-    }
-  })
-  .catch(() => {});
-
-// recording-status イベントを受信
-const recordingUnlisten = await listen<boolean>("recording-status", (event) => {
-  if (!disposed) isRecording = event.payload;
-});
-unlisteners.push(recordingUnlisten);
-
-// scheduler-status イベントを受信
-const schedulerUnlisten = await listen<string | null>("scheduler-status", (event) => {
-  if (!disposed) nextBatchAt = event.payload;
-});
-unlisteners.push(schedulerUnlisten);
-```
-
-#### 3. サイドバーのヘッダーパネルに状態チップを追加
-
-サイドバーの `<div class="rounded-[1.5rem] bg-ink-900 ...">` 内、
-`<p class="mt-3 text-sm leading-6 text-white/75">...</p>` の直後に追加:
-
-```svelte
-<div class="mt-4 flex items-center gap-2">
-  {#if isRecording}
-    <span class="relative flex h-2.5 w-2.5 flex-shrink-0">
-      <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-cinnabar-400 opacity-75"></span>
-      <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-cinnabar-500"></span>
-    </span>
-    <span class="text-xs font-semibold text-cinnabar-300">記録中</span>
-  {:else}
-    <span class="h-2.5 w-2.5 flex-shrink-0 rounded-full bg-white/20"></span>
-    <span class="text-xs text-white/40">停止中</span>
-  {/if}
-</div>
-```
-
-#### 4. サイドバー下部ショートカット欄に次回バッチ時刻を追加
-
-既存の `<div class="mt-auto rounded-[1.5rem] border border-ink-100 ...">` 内、
-`<p class="mt-3 text-sm leading-6 text-ink-600">...</p>` の直後に追加:
-
-```svelte
-{#if nextBatchAt}
-  <p class="mt-3 text-xs font-medium text-ink-500">
-    次回バッチ: <span class="font-semibold text-ink-700">{formatNextBatch(nextBatchAt)}</span>
-  </p>
-{/if}
-```
-
----
-
-## T22: ダッシュボードの記録アクション導線を明確化
-
-### 対象ファイル
-`src/routes/dashboard/+page.svelte`
-
-### 変更内容
-
-#### 1. メインカードの左カラムに状態バナーを追加
-
-`<div class="space-y-5">` の先頭（`<div class="inline-flex items-center rounded-full ...">` の前）に追加:
-
-```svelte
-{#if stats.is_recording}
-  <div class="flex items-center gap-3 rounded-2xl border border-cinnabar-200 bg-cinnabar-50 px-4 py-3">
-    <span class="relative flex h-3 w-3 flex-shrink-0">
-      <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-cinnabar-400 opacity-75"></span>
-      <span class="relative inline-flex h-3 w-3 rounded-full bg-cinnabar-500"></span>
-    </span>
-    <div>
-      <p class="text-sm font-semibold text-cinnabar-900">記録中</p>
-      <p class="text-xs text-cinnabar-600">
-        最終キャプチャ: {formatDateTime(stats.last_capture_at)}
-      </p>
-    </div>
-  </div>
-{:else}
-  <div class="flex items-center gap-3 rounded-2xl border border-ink-200 bg-ink-50 px-4 py-3">
-    <span class="h-3 w-3 flex-shrink-0 rounded-full bg-ink-300"></span>
-    <p class="text-sm text-ink-500">記録は停止中です — 開始するには「記録開始」を押してください</p>
-  </div>
-{/if}
-```
-
-#### 2. ボタングループの視覚的重みを変更
-
-既存のボタングループ `<div class="flex flex-wrap gap-3">` 内を以下に変更する:
-
-```svelte
-<div class="flex flex-wrap items-center gap-3">
-  <!-- 主アクション: 記録開始/停止 (変更なし、既存のクラスを維持) -->
-  <button
-    class={`rounded-full px-5 py-3 text-sm font-semibold text-white transition ${
-      stats.is_recording ? "bg-cinnabar-600 hover:bg-cinnabar-500" : "bg-ink-900 hover:bg-ink-700"
-    } disabled:cursor-not-allowed disabled:opacity-60`}
-    onclick={() => (stats.is_recording ? requestStopRecording() : void startRecording())}
-    disabled={!tauriAvailable || actionPending !== null}
-  >
-    {#if actionPending === "recording"}
-      更新中...
-    {:else if stats.is_recording}
-      記録停止
-    {:else}
-      記録開始
-    {/if}
-  </button>
-
-  <!-- 区切り -->
-  <span class="h-4 w-px bg-ink-200"></span>
-
-  <!-- 副アクション: 説明文生成 (小さく、控えめに) -->
-  <button
-    class="rounded-full px-4 py-2 text-sm font-medium text-ink-400 transition hover:text-ink-700 disabled:cursor-not-allowed disabled:opacity-60"
-    onclick={runBatch}
-    disabled={!tauriAvailable || actionPending !== null || stats.batch_running}
-  >
-    {#if actionPending === "batch"}
-      実行中...
-    {:else if stats.batch_running && !stats.server_running}
-      起動中...
-    {:else if stats.batch_running}
-      生成中...
-    {:else}
-      説明文を一括生成
-    {/if}
-  </button>
-</div>
-```
-
----
-
-## T23: 設定画面を基本設定と詳細設定に分離
-
-### 対象ファイル
-`src/routes/settings/+page.svelte`
-
-### 変更内容
-
-#### 1. $state を追加
-
-既存の `let showCopilotAdvanced = $state(false);` の直下に追加:
-
-```typescript
-let showAdvanced = $state(false);
-```
-
-#### 2. 詳細設定に属するブロックを条件付きにする
-
-以下の article / section を `{#if showAdvanced} ... {/if}` で囲む。
-囲む対象は以下の通り（順番は既存のまま維持）:
-
-**対象 1: セッション処理設定カード**
-- Copilot エンジン選択時に表示される `{#if config.vlm_engine === "copilot"}` の中の
-  セッション設定ブロック（`session_enabled` トグル以下のスライダー群）全体を囲む
-
-**対象 2: システムプロンプト・ユーザープロンプト・セッションプロンプトのカード**
-- これらを含む `<article>` を `{#if showAdvanced} ... {/if}` で囲む
-
-**対象 3: マスクルール設定カード全体**
-- マスクルール設定を含む `<article>` を `{#if showAdvanced} ... {/if}` で囲む
-
-#### 3. 詳細設定切り替えボタンを追加
-
-保存ボタンを含む `<div class="flex flex-wrap items-center justify-between gap-4">` の
-**直前**（同じ `<section class="space-y-4">` 内）に追加:
-
-```svelte
-<div class="flex justify-center">
-  <button
-    type="button"
-    onclick={() => (showAdvanced = !showAdvanced)}
-    class="flex items-center gap-2 rounded-full border border-ink-200 bg-white px-4 py-2 text-sm text-ink-500 transition hover:border-ink-300 hover:text-ink-700"
-  >
-    <span>{showAdvanced ? "詳細設定を隠す" : "詳細設定を表示（プロンプト・マスク等）"}</span>
-    <span class="text-ink-400">{showAdvanced ? "▲" : "▼"}</span>
-  </button>
-</div>
-```
-
-#### 4. 設定のヒントパネルのテキストを更新
-
-右カラムの ink-900 パネル内のテキストを更新。
-`<p>自動バッチを有効にすると...` の後に以下を追加:
-
-```svelte
-<p>「詳細設定を表示」でプロンプトやマスクルール等の上級設定にアクセスできます。</p>
-```
-
----
-
-## T24: ナビゲーションのラベルと不要バッジを整理
-
-### 対象ファイル
-`src/routes/+layout.svelte`
-
-### 変更内容
-
-#### 1. navItems 配列を修正
-
+**DEFAULT_CDP_PORT を変更:**
 ```typescript
 // 変更前
-{ href: "/preview", label: "記述プレビュー", status: "live" },
-
+const DEFAULT_CDP_PORT = 9222;
 // 変更後
-{ href: "/preview", label: "プレビュー", status: "live" },
+const DEFAULT_CDP_PORT = 9333;
 ```
 
-#### 2. ナビリンクの右端バッジを削除
-
-既存のナビリンク内:
-```svelte
-<a ... class={`flex items-center justify-between ...`}>
-  <span>{item.label}</span>
-  <span class={`rounded-full px-2 py-1 ...`}>
-    {item.status === "live" ? "有効" : item.status}
-  </span>
-</a>
-```
-
-を以下に変更:
-```svelte
-<a ... class={`flex items-center gap-2 ...`}>
-  <span>{item.label}</span>
-</a>
-```
-
-- `justify-between` を削除し `gap-2` に変更
-- バッジ `<span>` を完全に削除
-- `aria-disabled` と `onclick` は維持する
-
----
-
-## T25: セットアップ画面の Edge 起動を自動化
-
-### 対象ファイル
-`src/routes/setup/+page.svelte`
-
-### 前提
-- `check_copilot_connection` Tauri コマンドが T18〜T19 で実装済み
-- このコマンドは内部で `ensureEdgeConnected()` を呼び Edge を自動起動する
-- 戻り値: `{ connected: bool, login_required: bool, url?: string, error?: string }`
-
-### 変更内容
-
-#### 1. 型定義を追加
-
-script セクションの先頭付近に追加:
+**ParsedArgs 型に userDataDir を追加:**
 ```typescript
-type CopilotConnectionStatus = {
-  connected: boolean;
-  login_required: boolean;
-  url?: string | null;
-  error?: string | null;
+type ParsedArgs = {
+  port: number;
+  cdpPort: number;
+  userDataDir: string | null;
+  help: boolean;
 };
 ```
 
-#### 2. $state を追加
-
-既存の `let completing = $state(false);` の下に追加:
+**parseArgs() に --user-data-dir を追加:**
 ```typescript
-let launchingEdge = $state(false);
-let edgePollInterval = $state<number | null>(null);
-```
+function parseArgs(argv: string[]): ParsedArgs {
+  let port = DEFAULT_PORT;
+  let cdpPort = DEFAULT_CDP_PORT;
+  let userDataDir: string | null = null;
+  let help = false;
 
-#### 3. `launchAndWaitForEdge` 関数を追加
-
-```typescript
-async function launchAndWaitForEdge() {
-  if (!isTauri()) return;
-  launchingEdge = true;
-  message = "Edge を起動しています...";
-
-  try {
-    const status = await invoke<CopilotConnectionStatus>("check_copilot_connection");
-    if (status.connected || status.login_required) {
-      // Edge 起動成功（login_required でも CDP は繋がっている）
-      message = "Edge に接続しました。M365 Copilot にログインして「次へ」を押してください。";
-      await loadStatus();
-    } else {
-      message = "接続を待機しています...";
-      // 接続できない場合はポーリング
-      edgePollInterval = window.setInterval(async () => {
-        try {
-          const s = await invoke<CopilotConnectionStatus>("check_copilot_connection");
-          if (s.connected || s.login_required) {
-            if (edgePollInterval !== null) {
-              window.clearInterval(edgePollInterval);
-              edgePollInterval = null;
-            }
-            message = "Edge に接続しました。M365 Copilot にログインして「次へ」を押してください。";
-            await loadStatus();
-          }
-        } catch {
-          // ポーリング中のエラーは無視
-        }
-      }, 2000);
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--help" || arg === "-h") {
+      help = true;
+      continue;
     }
-  } catch (error) {
-    message = error instanceof Error ? error.message : String(error);
-  } finally {
-    launchingEdge = false;
+    if (arg === "--port") {
+      port = parsePort(argv[index + 1], "--port");
+      index += 1;
+      continue;
+    }
+    if (arg === "--cdp-port") {
+      cdpPort = parsePort(argv[index + 1], "--cdp-port");
+      index += 1;
+      continue;
+    }
+    if (arg === "--user-data-dir") {
+      userDataDir = argv[index + 1] ?? null;
+      index += 1;
+      continue;
+    }
   }
+
+  return { port, cdpPort, userDataDir, help };
 }
 ```
 
-#### 4. `onDestroy` でポーリングをクリア
-
-`onMount` の import の隣に `onDestroy` を追加し:
+**launchEdgeForCdp() で --user-data-dir を使用:**
 ```typescript
-import { onMount, onDestroy } from "svelte";
-```
+function launchEdgeForCdp(edgeExecutable: string, cdpPort: number): void {
+  const args = [
+    `--remote-debugging-port=${cdpPort}`,
+    "--remote-allow-origins=*",
+    "--no-first-run",
+    "--no-default-browser-check",
+  ];
 
-`onDestroy` を追加:
-```typescript
-onDestroy(() => {
-  if (edgePollInterval !== null) {
-    window.clearInterval(edgePollInterval);
+  // Kiroku 専用プロファイルで起動（他ツールとの競合を防ぐ）
+  if (globalOptions.userDataDir) {
+    args.push(`--user-data-dir=${globalOptions.userDataDir}`);
   }
-});
+
+  args.push(COPILOT_URL);
+
+  const child = spawn(edgeExecutable, args, {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  child.unref();
+}
 ```
 
-#### 5. edge-setup ステップの表示内容を変更
-
-`{#if currentStep === "edge-setup"}` ブロック（またはそれに相当するステップ表示部分）内で、
-Edge の手動起動手順テキスト（「--remote-debugging-port=9222 付きで起動」等）を以下に置き換える:
-
-```svelte
-<div class="space-y-4">
-  <p class="text-sm leading-7 text-ink-600">
-    「起動して接続確認」を押すと、Edge が自動的にデバッグモードで起動し Copilot ページを開きます。
-    その後、M365 アカウントでのログインを確認してください。
-  </p>
-
-  <button
-    type="button"
-    onclick={launchAndWaitForEdge}
-    disabled={launchingEdge || !tauriAvailable}
-    class="w-full rounded-2xl bg-ink-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-60"
-  >
-    {launchingEdge ? "Edge を起動中..." : "Edge を起動して接続確認"}
-  </button>
-
-  {#if message}
-    <p class="text-sm leading-6 text-ink-600">{message}</p>
-  {/if}
-
-  <!-- 接続後に「次へ」ボタンを表示 -->
-  {#if status.edge_debugging_ready}
-    <button
-      type="button"
-      onclick={() => (currentStep = "test-capture")}
-      class="w-full rounded-2xl border border-brass-300 bg-brass-50 px-5 py-3 text-sm font-semibold text-brass-700 transition hover:bg-brass-100"
-    >
-      接続を確認しました — 次へ
-    </button>
-  {/if}
-</div>
+**main() の help メッセージを更新:**
+```typescript
+console.error("Usage: node copilot_server.js [--port 18080] [--cdp-port 9333] [--user-data-dir <path>]");
 ```
+
+#### 2. src-tauri/src/vlm/copilot_server.rs
+
+**CopilotServer に edge_profile_dir を追加:**
+```rust
+#[derive(Debug)]
+pub struct CopilotServer {
+    process: Option<Child>,
+    port: u16,
+    cdp_port: u16,
+    client: Client,
+    script_path: Option<PathBuf>,
+    edge_profile_dir: PathBuf,
+}
+```
+
+**new() を変更:**
+```rust
+pub fn new(config: &AppConfig, app_paths: &AppPaths) -> Result<Self, VlmError> {
+    let edge_profile_dir = app_paths.data_dir.join("edge-profile");
+    Ok(Self {
+        process: None,
+        port: config.copilot_port,
+        cdp_port: config.edge_cdp_port,
+        client: Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .map_err(VlmError::Http)?,
+        script_path: resolve_script_path(app_paths),
+        edge_profile_dir,
+    })
+}
+```
+
+**start() の args に --user-data-dir を追加:**
+
+既存の args 配列:
+```rust
+.args([
+    &script_path.to_string_lossy().into_owned(),
+    "--port",
+    &self.port.to_string(),
+    "--cdp-port",
+    &self.cdp_port.to_string(),
+])
+```
+
+を以下に変更:
+```rust
+.args({
+    let mut args = vec![
+        script_path.to_string_lossy().into_owned(),
+        "--port".to_string(),
+        self.port.to_string(),
+        "--cdp-port".to_string(),
+        self.cdp_port.to_string(),
+        "--user-data-dir".to_string(),
+        self.edge_profile_dir.to_string_lossy().into_owned(),
+    ];
+    args
+}.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+```
+
+注意: `.args()` は `&[&str]` を受け取るため、`let args_owned: Vec<String>` を作ってから参照を渡す方がクリーン:
+
+```rust
+let args_owned = vec![
+    script_path.to_string_lossy().into_owned(),
+    "--port".to_string(),
+    self.port.to_string(),
+    "--cdp-port".to_string(),
+    self.cdp_port.to_string(),
+    "--user-data-dir".to_string(),
+    self.edge_profile_dir.to_string_lossy().into_owned(),
+];
+
+let child = match Command::new(node)
+    .args(&args_owned)
+    .stdout(Stdio::null())
+    .stderr(Stdio::from(stderr_file))
+    .spawn()
+```
+
+#### 3. src-tauri/src/models.rs
+
+**edge_cdp_port のデフォルトを変更:**
+```rust
+// 変更前
+edge_cdp_port: 9222,
+// 変更後
+edge_cdp_port: 9333,
+```
+
+2 箇所（Default impl と with_data_dir）の両方を変更すること。
+
+#### 4. src-tauri/src/config.rs
+
+**load_config() にマイグレーションを追加:**
+
+既存のマイグレーション処理（`batch_times.is_empty()` チェック等）の近くに追加:
+
+```rust
+// CDP ポートのマイグレーション: 9222 → 9333（競合回避）
+if config.edge_cdp_port == 9222 {
+    config.edge_cdp_port = 9333;
+}
+```
+
+#### 5. esbuild バンドル
+
+変更後にバンドルを実行:
+```bash
+npx esbuild src/copilot_server.ts --bundle --platform=node --outfile=src-tauri/binaries/copilot_server.js --format=esm --external:playwright
+```
+
+---
+
+## T27: アプリ起動時の Copilot 自動接続
+
+### 目的
+setup 完了後のアプリ起動時に copilot_server + Edge を自動で起動する。
+ユーザーが何も操作しなくても Copilot 接続が確立される状態にする。
+
+### 対象ファイル
+- `src-tauri/src/lib.rs`
+- `src-tauri/src/vlm/copilot_server.rs`（関数追加）
+
+### 変更内容
+
+#### 1. src-tauri/src/vlm/copilot_server.rs に関数を追加
+
+ファイル末尾（`fn null_device_path()` の後）に追加:
+
+```rust
+use tauri::{AppHandle, Emitter};
+use crate::state::AppState;
+use crate::vlm::server::{update_vlm_state, CopilotConnectionStatus};
+
+/// アプリ起動時に Copilot サーバーと Edge を自動接続する。
+/// setup_complete かつ vlm_engine == "copilot" の場合のみ動作する。
+/// 失敗してもアプリの動作には影響しない（バッチ時に再試行される）。
+pub fn spawn_copilot_auto_connect(app: AppHandle, state: AppState) {
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = copilot_auto_connect(&app, &state).await {
+            eprintln!("[copilot] auto-connect failed (will retry at batch time): {error}");
+        }
+    });
+}
+
+async fn copilot_auto_connect(app: &AppHandle, state: &AppState) -> Result<(), Box<dyn std::error::Error>> {
+    let (setup_complete, vlm_engine) = {
+        let config = state.config.lock().await;
+        (config.setup_complete, config.vlm_engine.clone())
+    };
+
+    if !setup_complete || vlm_engine != "copilot" {
+        return Ok(());
+    }
+
+    // UI 初期化を少し待つ
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // copilot_server プロセスを起動
+    let data_dir = state.app_paths.data_dir.clone();
+    {
+        let mut server = state.copilot_server.lock().await;
+        server.start(&data_dir).await?;
+    }
+
+    let snapshot = update_vlm_state(state, Some(true), None, None).await;
+    let _ = app.emit("vlm-status", &snapshot);
+
+    // /status を呼んでログイン状態を確認
+    let server_url = {
+        let server = state.copilot_server.lock().await;
+        server.server_url()
+    };
+
+    let status_result = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?
+        .get(format!("{server_url}/status"))
+        .send()
+        .await;
+
+    if let Ok(response) = status_result {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct StatusResponse {
+            connected: bool,
+            login_required: bool,
+        }
+
+        if let Ok(status) = response.json::<StatusResponse>().await {
+            if status.login_required {
+                let _ = app.emit(
+                    "copilot-login-required",
+                    "Copilot にログインしてください。Edge の画面を確認してください。",
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+```
+
+#### 2. src-tauri/src/lib.rs
+
+**import を追加:**
+```rust
+use vlm::copilot_server::spawn_copilot_auto_connect;
+```
+
+**setup() 内の spawn_scheduler() の直後に追加:**
+
+```rust
+spawn_scheduler(app.handle().clone(), scheduler_state);
+
+// Copilot 自動接続（setup 完了済みの場合）
+let auto_connect_state = app.state::<AppState>().inner().clone();
+spawn_copilot_auto_connect(app.handle().clone(), auto_connect_state);
+```
+
+注意: `spawn_copilot_auto_connect` は `app.manage(state)` の後に呼ぶ必要がある。
+現在のコードでは `app.manage(state)` → `setup_tray()` → `spawn_scheduler()` の順なので、
+`spawn_scheduler()` の直後が適切。ただし `app.state::<AppState>()` で取得する。
+
+もし `state` が `app.manage()` で consume されている場合は、事前に clone しておく:
+
+```rust
+let state = AppState::new(app.handle())?;
+let scheduler_state = state.clone();
+let auto_connect_state = state.clone();
+// ... (既存コード)
+app.manage(state);
+setup_tray(app.handle())?;
+spawn_scheduler(app.handle().clone(), scheduler_state);
+spawn_copilot_auto_connect(app.handle().clone(), auto_connect_state);
+```
+
+#### 3. vlm/copilot_server.rs の pub 関数をモジュールから export
+
+`spawn_copilot_auto_connect` が `lib.rs` からアクセスできるよう、
+`vlm/mod.rs` で必要に応じて re-export するか、
+`lib.rs` で `use vlm::copilot_server::spawn_copilot_auto_connect;` としてパスを通す。
+
+---
+
+## T28: バックグラウンド接続ヘルスチェックと自動再接続
+
+### 目的
+60 秒間隔で Copilot 接続を監視し、切断時に自動復旧、ログイン切れを即座に通知する。
+
+### 対象ファイル
+- `src-tauri/src/vlm/copilot_server.rs`
+
+### 変更内容
+
+#### 1. spawn_copilot_auto_connect() の末尾でヘルスモニターを起動
+
+`copilot_auto_connect()` の成功後（または失敗後でも）にヘルスモニターを起動:
+
+```rust
+pub fn spawn_copilot_auto_connect(app: AppHandle, state: AppState) {
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = copilot_auto_connect(&app, &state).await {
+            eprintln!("[copilot] auto-connect failed (will retry at batch time): {error}");
+        }
+
+        // ヘルスモニターは auto-connect の成否に関わらず開始
+        let (setup_complete, vlm_engine) = {
+            let config = state.config.lock().await;
+            (config.setup_complete, config.vlm_engine.clone())
+        };
+        if setup_complete && vlm_engine == "copilot" {
+            copilot_health_monitor_loop(&app, &state).await;
+        }
+    });
+}
+```
+
+#### 2. copilot_health_monitor_loop() を追加
+
+```rust
+const HEALTH_MONITOR_INTERVAL_SECS: u64 = 60;
+
+/// 60 秒間隔で copilot_server + Edge の接続を監視する。
+/// 切断時に自動再起動、ログイン切れ時にフロントエンドに通知する。
+async fn copilot_health_monitor_loop(app: &AppHandle, state: &AppState) {
+    #[derive(PartialEq, Clone)]
+    enum ConnectionState {
+        Connected,
+        LoginRequired,
+        Disconnected,
+    }
+
+    let mut last_state = ConnectionState::Disconnected;
+
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(HEALTH_MONITOR_INTERVAL_SECS)).await;
+
+        // バッチ実行中はスキップ（batch.rs が自前でリトライする）
+        {
+            let vlm_state = state.vlm_state.lock().await;
+            if vlm_state.batch_running {
+                continue;
+            }
+        }
+
+        // エンジンが copilot でなくなった場合は終了
+        {
+            let config = state.config.lock().await;
+            if config.vlm_engine != "copilot" {
+                break;
+            }
+        }
+
+        // ヘルスチェック
+        let healthy = {
+            let server = state.copilot_server.lock().await;
+            server.health_check().await.is_ok()
+        };
+
+        if !healthy {
+            // 自動再起動を試行
+            let data_dir = state.app_paths.data_dir.clone();
+            let restart_result = {
+                let mut server = state.copilot_server.lock().await;
+                server.start(&data_dir).await
+            };
+
+            match restart_result {
+                Ok(()) => {
+                    let snapshot = update_vlm_state(state, Some(true), None, None).await;
+                    let _ = app.emit("vlm-status", &snapshot);
+                    eprintln!("[copilot] health monitor: reconnected after disconnect");
+                }
+                Err(error) => {
+                    if last_state != ConnectionState::Disconnected {
+                        let snapshot = update_vlm_state(
+                            state,
+                            Some(false),
+                            None,
+                            Some(error.to_string()),
+                        )
+                        .await;
+                        let _ = app.emit("vlm-status", &snapshot);
+                        last_state = ConnectionState::Disconnected;
+                    }
+                    continue;
+                }
+            }
+        }
+
+        // /status でログイン状態を確認
+        let server_url = {
+            let server = state.copilot_server.lock().await;
+            server.server_url()
+        };
+
+        let current_state = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .ok()
+            .map(|c| c.get(format!("{server_url}/status")))
+        {
+            Some(request) => {
+                #[derive(serde::Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct StatusResponse {
+                    connected: bool,
+                    login_required: bool,
+                }
+
+                match request.send().await {
+                    Ok(response) => match response.json::<StatusResponse>().await {
+                        Ok(status) if status.login_required => ConnectionState::LoginRequired,
+                        Ok(status) if status.connected => ConnectionState::Connected,
+                        _ => ConnectionState::Disconnected,
+                    },
+                    Err(_) => ConnectionState::Disconnected,
+                }
+            }
+            None => ConnectionState::Disconnected,
+        };
+
+        // 状態が変化した場合のみイベントを emit
+        if current_state != last_state {
+            match &current_state {
+                ConnectionState::LoginRequired => {
+                    let _ = app.emit(
+                        "copilot-login-required",
+                        "Copilot にログインしてください。Edge の画面を確認してください。",
+                    );
+                }
+                ConnectionState::Connected => {
+                    let snapshot = update_vlm_state(state, Some(true), None, None).await;
+                    let _ = app.emit("vlm-status", &snapshot);
+                }
+                ConnectionState::Disconnected => {
+                    // すでに上の再起動失敗で emit 済み
+                }
+            }
+            last_state = current_state;
+        }
+    }
+}
+```
+
+### 注意事項
+
+- `StatusResponse` 構造体が T27 と T28 で重複するので、ファイル上部に 1 つだけ定義するか、
+  `CopilotConnectionStatusResponse`（server.rs に既存）を re-use すること。
+  既存の `CopilotConnectionStatusResponse` を `pub` にして `use` するのが最もクリーン。
+
+- `update_vlm_state` は `crate::vlm::server` から import する（T27 で既に追加済み）。
+
+- ヘルスモニターは無限ループなので、アプリ終了時は `tauri::async_runtime` が自動的にキャンセルする。
+  明示的なシャットダウン処理は不要。
 
 ---
 
 ## 完了条件チェックリスト
 
-- [ ] `pnpm build` がエラーなしで通過する
-- [ ] サイドバーのヘッダーに記録中/停止中のインジケーターが表示される
-- [ ] 記録中にパルスアニメーション（animate-ping）が動作する
-- [ ] サイドバー下部に「次回バッチ: HH:MM」が表示される
-- [ ] ダッシュボードのコンテンツ上部に記録中/停止中バナーが表示される
-- [ ] 「説明文を一括生成」ボタンが視覚的に小さくなっている
-- [ ] 設定画面に「詳細設定を表示 ▼」ボタンがある
-- [ ] ボタンを押すとプロンプト・マスクルール・セッション詳細が展開される
-- [ ] ナビゲーションの「記述プレビュー」が「プレビュー」になっている
-- [ ] ナビゲーションの「有効」バッジが削除されている
-- [ ] セットアップ画面の edge-setup ステップに「Edge を起動して接続確認」ボタンがある
-- [ ] ボタン押下後に接続ポーリングが動作し、成功後に「次へ」ボタンが表示される
+- [ ] `cargo check` がエラーなしで通過する
+- [ ] `cargo test` が全テスト通過する
+- [ ] `pnpm build` がエラーなしで通過する（esbuild バンドル含む）
+- [ ] copilot_server.ts が `--user-data-dir` 引数を受け取れる
+- [ ] `launchEdgeForCdp()` で `--user-data-dir` が Edge 起動引数に含まれる
+- [ ] models.rs の edge_cdp_port デフォルトが 9333 になっている
+- [ ] config.rs で 9222 → 9333 のマイグレーションが実行される
+- [ ] lib.rs の setup() で spawn_copilot_auto_connect() が呼ばれている
+- [ ] setup_complete && vlm_engine == "copilot" 時にアプリ起動で copilot_server が自動起動する
+- [ ] 60 秒間隔のヘルスチェックループが動作する
+- [ ] ヘルスチェック失敗時に copilot_server が自動再起動される
+- [ ] ログイン切れ検出時に copilot-login-required イベントが emit される
+- [ ] バッチ実行中はヘルスモニターがスキップされる

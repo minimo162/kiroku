@@ -579,6 +579,119 @@
       ]
     },
     {
+      "id": "T26",
+      "title": "Kiroku 専用 Edge プロファイルと非標準 CDP ポート",
+      "description": "Edge を --user-data-dir で専用プロファイルから起動し、CDP ポートをデフォルト 9333 に変更することで、他の Copilot 自動化ツールやユーザーの通常 Edge との競合を防ぐ。",
+      "files": [
+        "src/copilot_server.ts",
+        "src-tauri/src/vlm/copilot_server.rs",
+        "src-tauri/src/models.rs",
+        "src-tauri/src/config.rs"
+      ],
+      "status": "todo",
+      "priority": "P0",
+      "depends_on": ["T18"],
+      "details": [
+        "## copilot_server.ts の変更",
+        "",
+        "1. CLI 引数に --user-data-dir を追加:",
+        "   parseArgs() に --user-data-dir オプションを追加",
+        "   globalOptions に userDataDir: string | null を追加",
+        "",
+        "2. launchEdgeForCdp() で --user-data-dir を使用:",
+        "   引数リストに `--user-data-dir=${userDataDir}` を追加（userDataDir が非 null の場合）",
+        "   これにより Kiroku 専用の Edge プロセスが起動する",
+        "",
+        "3. DEFAULT_CDP_PORT を 9222 → 9333 に変更",
+        "",
+        "## copilot_server.rs の変更",
+        "",
+        "1. CopilotServer に edge_profile_dir: PathBuf フィールドを追加",
+        "   デフォルト: data_dir.join(\"edge-profile\")",
+        "",
+        "2. start() で copilot_server.js に --user-data-dir 引数を渡す:",
+        "   args に '--user-data-dir', &self.edge_profile_dir.to_string_lossy() を追加",
+        "",
+        "## models.rs の変更",
+        "",
+        "1. edge_cdp_port のデフォルトを 9222 → 9333 に変更",
+        "",
+        "## config.rs の変更",
+        "",
+        "1. load_config() でマイグレーション追加:",
+        "   edge_cdp_port が 9222 の場合 → 9333 に更新",
+        "   （明示的に 9222 を設定したユーザーも移行する。手動で戻すことは可能）"
+      ]
+    },
+    {
+      "id": "T27",
+      "title": "アプリ起動時の Copilot 自動接続",
+      "description": "setup 完了後のアプリ起動時に copilot_server + Edge を自動で起動し、ユーザーが意識せずに Copilot 接続が確立される状態にする。",
+      "files": [
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/vlm/copilot_server.rs"
+      ],
+      "status": "todo",
+      "priority": "P0",
+      "depends_on": ["T26"],
+      "details": [
+        "## lib.rs の変更",
+        "",
+        "1. setup() 内の spawn_scheduler() の後に自動接続を起動:",
+        "   spawn_copilot_auto_connect(app.handle().clone(), auto_connect_state);",
+        "",
+        "## vlm/copilot_server.rs（または新規 vlm/auto_connect.rs）に追加",
+        "",
+        "1. pub fn spawn_copilot_auto_connect(app: AppHandle, state: AppState):",
+        "   tauri::async_runtime::spawn(async move { ... });",
+        "   処理:",
+        "     a. config.setup_complete && config.vlm_engine == 'copilot' でなければ return",
+        "     b. 2 秒待機（UI 初期化を待つ）",
+        "     c. copilot_server.start(&data_dir).await",
+        "     d. vlm-status イベントを emit（UI に接続状態を反映）",
+        "     e. /status エンドポイントを呼び出してログイン状態を確認",
+        "     f. login_required なら copilot-login-required イベントを emit",
+        "     g. エラーは eprintln で出力するだけ（サイレント失敗）",
+        "        → バッチ時に ensure_engine_running() が再試行する"
+      ]
+    },
+    {
+      "id": "T28",
+      "title": "バックグラウンド接続ヘルスチェックと自動再接続",
+      "description": "60秒間隔で copilot_server + Edge の接続を監視し、切断時に自動復旧・ログイン切れを即座にユーザーに通知する。",
+      "files": [
+        "src-tauri/src/vlm/copilot_server.rs"
+      ],
+      "status": "todo",
+      "priority": "P1",
+      "depends_on": ["T27"],
+      "details": [
+        "## vlm/copilot_server.rs に追加",
+        "",
+        "1. pub fn spawn_copilot_health_monitor(app: AppHandle, state: AppState):",
+        "   tauri::async_runtime::spawn(async move { ... });",
+        "   T27 の spawn_copilot_auto_connect() が完了した後に開始する",
+        "   （auto_connect 内で成功後に spawn するか、lib.rs で順次呼び出す）",
+        "",
+        "2. ヘルスチェックループ（60 秒間隔）:",
+        "   a. config.vlm_engine != 'copilot' なら sleep して continue",
+        "   b. vlm_state.batch_running なら sleep して continue（バッチが自前でリトライ）",
+        "   c. copilot_server.health_check() を呼び出し",
+        "   d. 失敗した場合:",
+        "      - copilot_server.start(&data_dir).await を試行",
+        "      - 成功: vlm-status を emit",
+        "      - 失敗: vlm-status(server_running=false) を emit、次回ループで再試行",
+        "   e. 成功した場合:",
+        "      - /status エンドポイントでログイン状態を確認",
+        "      - login_required なら copilot-login-required を emit",
+        "      - 前回と状態が変わった場合のみ vlm-status を emit（ノイズ削減）",
+        "",
+        "3. 状態トラッキング:",
+        "   前回の状態（connected/login_required/disconnected）を保持",
+        "   変化があった場合のみイベントを emit する"
+      ]
+    },
+    {
       "id": "T17",
       "title": "動作確認・手動テスト",
       "description": "Session Collage 機能を実際の M365 Copilot 環境で動作確認する。",
@@ -621,6 +734,9 @@
     "T23",
     "T24",
     "T25",
+    "T26",
+    "T27",
+    "T28",
     "T17"
   ],
   "notes": {
@@ -630,13 +746,16 @@
       "既存の per-capture バッチループは変更しない（session_enabled: false または llama エンジン時に使用）",
       "コラージュは image クレート（既存依存）で生成。imageproc は時刻ラベルに使うが省略可",
       "セッションの「まだ進行中」判定: 最後のキャプチャが session_gap_secs 以内なら処理しない",
-      "describe_screenshot() は変更不要: collage_path を image_path として渡すだけ"
+      "describe_screenshot() は変更不要: collage_path を image_path として渡すだけ",
+      "Kiroku 専用 Edge プロファイル: --user-data-dir で完全に分離し他ツールとの競合を防ぐ",
+      "CDP ポート 9333: 9222 は一般的すぎるため非標準ポートで衝突確率を下げる",
+      "auto-connect は非同期 spawn: アプリ起動をブロックせず、失敗しても致命的にしない"
     ],
     "automation_constraints": [
       "M365 への自動ログインは不可（セキュリティ上、認証情報を扱わない）",
-      "Edge のデバッグ起動と通常起動は同時に共存できない（同じプロセスグループ）",
+      "Edge のデバッグ起動と通常起動は同時に共存できない（同じプロセスグループ）→ 専用プロファイルで解決",
       "T18 の Edge 自動起動は Windows 専用（msedge.exe パス決め打ち）",
-      "CDP ポートが競合している場合（他アプリ等）はユーザーに通知して手動対応を求める"
+      "専用プロファイルは初回ログインが必要だが、以降はセッションが保持される"
     ],
     "open_questions": [
       "imageproc クレートを追加するか（時刻ラベル描画用）、省略して Cargo.toml を増やさないか",
@@ -651,7 +770,10 @@
       "session_gap_secs": "600 秒（10分）",
       "max_frames_per_collage": "6（2×3グリッド）",
       "collage_max_size": "1280×960px",
-      "dedup_threshold_for_key_frames": "5（通常の dhash_threshold の半分）"
+      "dedup_threshold_for_key_frames": "5（通常の dhash_threshold の半分）",
+      "copilot_cdp_port": "9333（非標準、競合回避）",
+      "health_check_interval_secs": "60（バックグラウンド監視）",
+      "auto_connect_delay_secs": "2（UI 初期化待ち）"
     }
   }
 }
