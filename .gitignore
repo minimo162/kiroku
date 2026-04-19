@@ -51,3 +51,11 @@ package/
 # tasks/ 
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Runtime state marker files
+/Bundling
+/Failed
+/Idle
+/Recording
+/Starting
+/Stopping
