@@ -410,8 +410,9 @@ enum EventKind {
     },
 
     TextInput {
-        text: String,
+        text: Option<String>,       // masked 時は None
         masked: bool,
+        mask_reason: Option<MaskReason>,
     },
 
     Screenshot {
@@ -434,9 +435,30 @@ enum EventKind {
     },
 
     Warning {
-        code: String,
+        code: WarningCode,
         message: String,
     },
+}
+
+enum WarningCode {
+    OffPrimaryMonitor,
+    UiaUnavailable,
+    UiaTimeout,
+    UiaWorkerRestarted,
+    EventDropped,
+    SeqDuplicate,
+    TimestampRegression,
+    ImeCompositionBestEffort,
+    ScreenshotFailed,
+    MaxDurationReached,
+}
+
+enum MaskReason {
+    PasswordField,
+    UiaPending,
+    UiaTimeout,
+    UiaDisabled,
+    MaskRule,
 }
 
 struct Event {
@@ -474,14 +496,12 @@ bundle 生成前に `normalize.rs` で次を行う。
         ...
 ```
 
-`session.json` には以下を保存する。
+`session.json` のフィールド定義は design.md §5.7.1 を正準とする。要点:
 
-- session_id
-- started_at
-- config snapshot（prompt template / max duration / flags）
-- primary monitor 情報
-- app version
-- bundle_version
+- `session_schema_version` / `events_schema_version`
+- `session_id`, `started_at`, `app_version`
+- `primary_monitor`（width / height / scale）
+- `config_snapshot`（max_recording_minutes / record_keystrokes / record_uia_context）
 
 ### 11.2 バンドル
 
@@ -558,24 +578,15 @@ bundle 生成前に `normalize.rs` で次を行う。
 
 ## 12.5 manifest.json
 
-```json
-{
-  "bundle_version": 1,
-  "bundle_id": "uuid",
-  "session_id": "uuid",
-  "status": "ready",
-  "started_at": "2026-04-17T15:30:12+09:00",
-  "ended_at": "2026-04-17T15:38:49+09:00",
-  "frame_count": 18,
-  "event_count": 312,
-  "primary_app": "EXCEL.EXE",
-  "prompt_path": "prompt.md",
-  "warnings": [
-    "IME input is best-effort",
-    "v1 captures primary monitor only"
-  ]
-}
-```
+フィールド定義は design.md §5.7.2 を正準とする。要点のみ抜粋:
+
+- `manifest_schema_version` / `source_session_id` / `source_events_schema_version`
+- `status`, `started_at`, `ended_at`, `primary_app`
+- `frame_count`, `source_event_count`, `event_count`, `dropped_event_count`
+- `warning_counts`（`WarningCode` → 件数）
+- `privacy_status`: `"unredacted" | "redacted"` — Phase 3 未完了 bundle は `"unredacted"`
+- `prompt_path`, `prompt_sha256`
+- 人間向け注記は `notes` に載せる（例: "IME input is best-effort", "v1 captures primary monitor only"）
 
 ## 12.6 prompt.md
 

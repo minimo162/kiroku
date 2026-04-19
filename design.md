@@ -398,6 +398,71 @@ pub struct EventEnvelope {
 - password / unknown / timeout / UIA disabled は masked とする。
 - masked caption は文字数を出さず `入力: [MASKED]` と表記する。
 
+### 5.7 Schema version / metadata 正準定義
+
+3 つの生成物 (session.json / events.ndjson / manifest.json) は独立した `*_schema_version` を持つ。
+requirements.md / tasks.md はこの節の定義のみを参照する。
+
+#### 5.7.1 session.json
+
+```json
+{
+  "session_schema_version": 1,
+  "events_schema_version": 1,
+  "session_id": "uuid-v4",
+  "started_at": "RFC3339",
+  "app_version": "0.2.0",
+  "primary_monitor": { "width": 2560, "height": 1440, "scale": 1.5 },
+  "config_snapshot": {
+    "max_recording_minutes": 60,
+    "record_keystrokes": true,
+    "record_uia_context": true
+  }
+}
+```
+
+- `session_schema_version`: このファイル形式のバージョン。
+- `events_schema_version`: `events.ndjson` の `EventKind` 列挙と serde tag 規約のバージョン。
+  events.ndjson に個別のヘッダ行は持たず、session.json 側で集中管理する。
+
+#### 5.7.2 manifest.json
+
+```json
+{
+  "manifest_schema_version": 1,
+  "bundle_id": "uuid-v4",
+  "source_session_id": "uuid-v4",
+  "source_events_schema_version": 1,
+  "status": "ready",
+  "started_at": "RFC3339",
+  "ended_at": "RFC3339",
+  "primary_app": "EXCEL.EXE",
+  "frame_count": 18,
+  "source_event_count": 312,
+  "event_count": 42,
+  "dropped_event_count": 0,
+  "warning_counts": {
+    "off_primary_monitor": 1,
+    "ime_composition_best_effort": 1
+  },
+  "privacy_status": "redacted",
+  "prompt_path": "prompt.md",
+  "prompt_sha256": "hex-64",
+  "notes": [
+    "IME input is best-effort",
+    "v1 captures primary monitor only"
+  ]
+}
+```
+
+- `manifest_schema_version`: このファイル形式のバージョン。旧名 `bundle_version` / `bundle_schema_version` は廃止。
+- `source_session_id` / `source_events_schema_version`: この bundle が生成された raw session とその event schema。
+- `source_event_count`: raw session の全 event 数。 `event_count` は bundle 用に normalize された後の件数。
+- `dropped_event_count`: 記録中に channel full 等で落ちた event 数。
+- `warning_counts`: `WarningCode` → 件数の map。人間向けの補足文は `notes` に分離する。
+- `privacy_status`: `"unredacted" | "redacted"`。Phase 3 未完了の bundle は `"unredacted"` で出力し、UI で警告する。
+- `prompt_sha256`: `prompt.md` の内容ハッシュ。Copilot に貼った prompt と bundle の対応を後から検証できる。
+
 ---
 
 ## 6. 長寿命サービス設計
@@ -462,19 +527,26 @@ bitflags::bitflags! {
 | `MouseMove` | `MouseMove` | 50Hz 絞りを writer 側で実施 |
 | `Wheel` | `Wheel` | |
 
-#### 6.1.5 IME の扱い
+#### 6.1.5 IME / TextInput 発火の判定フロー
 
-v1 は「printable キー押下時に `TextInput { text: Some(...) }` を同時発火する」
-最低版のみ実装する。
+v1 は printable キー押下を唯一の `TextInput` 発火源とする。判定は以下の順で行い、
+§5.6 の privacy-first と整合させる（privacy 判定は §6.2.4 の `TextPrivacyState` が単一の source of truth）。
 
-- `ctrl/alt/win` の組合せは TextInput を出さない。
-- Shift のみなら大文字化して `TextInput` を出す。
-- 日本語 IME の変換中文字列は取れないため、`ImeCompositionBestEffort` を
-  **セッション開始時に 1 度だけ** `Warning` として記録する。
-- 確定文字列の取得は v1 では試みない (requirements §6.2)。
-- privacy state が `ConfirmedPassword / UnknownSensitive` の場合、
-  `TextInput { text: None, masked: true, mask_reason }` を送る。
-  masked caption は文字数を出さず、常に `入力: [MASKED]` とする。
+1. **修飾キー判定**
+   - `ctrl/alt/win` の組合せは `TextInput` を発火しない（`PhysicalKeyDown` のみ）。
+   - `Shift` のみは `TextInput` を発火し、対象文字を大文字化する。
+2. **privacy 判定**
+   - `ConfirmedPlain` の場合のみ `TextInput { text: Some(raw), masked: false, mask_reason: None }`。
+   - `ConfirmedPassword` → `TextInput { text: None, masked: true, mask_reason: Some(PasswordField) }`。
+   - `UnknownSensitive` → `TextInput { text: None, masked: true, mask_reason: Some(UiaPending) }`。
+   - UIA 未初期化 / `record_uia_context=false` → `masked = true, mask_reason = Some(UiaDisabled)`。
+3. **IME best-effort 宣言**
+   - 日本語 IME の変換中 raw キー (例: 英字キー列) は `TextInput` として永続化はするが意味のある文字列ではない。
+   - これを利用者に明示するため、session 開始時に `Warning(ImeCompositionBestEffort)` を 1 度だけ記録する。
+4. **masked caption**
+   - bundle の annotate 時、masked `TextInput` の caption は文字数を出さず常に `入力: [MASKED]`。
+
+確定文字列の取得 (IME composition の完全再現) は v1 の非目標 (requirements §6.2)。
 
 #### 6.1.6 rdev の Windows 制約
 
@@ -602,17 +674,24 @@ pub struct RecordingSession {
 9. `EventEnvelope { kind: SessionStarted, ... }` を writer に送る。
 
 `stop(reason)`:
+
+順序の原則: **gate input → final capture → drain UIA → SessionStopped → FlushBarrier → close/join**。
+`SessionStopped` は必ず `FlushBarrier` より前に writer へ送る。これにより、barrier 返却時点で
+`events.ndjson` には `SessionStopped` が append 済みであることが保証される。
+
 1. `recording_active = false`。
-2. InputListener の session を `ArcSwapOption::store(None)`。
-3. `CaptureRequest::Final { ack }` を sampler に送る。
-4. sampler が final screenshot を通常 capture と同じ経路で writer に送る。
-5. writer に `WriterMessage::FlushBarrier { ack }` を送り、ack を待つ。
-6. `EventEnvelope { kind: SessionStopped { reason }, ... }` を writer に送る。
-7. capture / focus / uia request channel を close し、sampler / focus task を join。
-8. UIA response を短時間 drain し、deadline 超過応答は stale として破棄する。
-9. event_tx を close → writer task が EOF を検知して flush。
-10. writer task の `join` で `WriterSummary` を受け取る。
-11. Bundle builder へ `SessionPaths` と `WriterSummary` を引き渡す。
+2. InputListener の session を `ArcSwapOption::store(None)`。以後、入力 callback は no-op。
+3. `CaptureRequest::Final { ack }` を sampler に送り、final screenshot event が writer に enqueue されるまで待つ。
+4. UIA response channel を短時間 drain し、deadline 内の応答を writer に送る。deadline 超過は stale として破棄。
+5. `EventEnvelope { kind: SessionStopped { reason }, ... }` を writer に送る。
+6. `WriterMessage::FlushBarrier { ack }` を writer に送り、ack を待つ。
+   - ack 時点で `events.ndjson` は `SessionStopped` を含めて fsync 済み。
+7. capture / focus / uia request channel を close し、sampler / focus / uia 補助 task を join。
+8. event_tx を close → writer task が EOF を検知して最終 flush。
+9. writer task の `join` で `WriterSummary` を受け取る。
+10. Bundle builder へ `SessionPaths` と `WriterSummary` を引き渡す。
+
+barrier 後に送られる event は無いため、`FlushBarrier` は writer 側から見ると「これ以上の通常 event は来ない」マーカーも兼ねる。
 
 ### 7.3 SessionPaths とディレクトリ
 
@@ -627,18 +706,7 @@ pub struct RecordingSession {
         000002.png
 ```
 
-- `session.json` スキーマ:
-  ```json
-  {
-    "schema_version": 1,
-    "session_id": "uuid",
-    "started_at": "RFC3339",
-    "app_version": "0.2.0",
-    "bundle_version": 1,
-    "primary_monitor": { "width": 2560, "height": 1440, "scale": 1.5 },
-    "config_snapshot": { "max_recording_minutes": 60, "record_keystrokes": true, ... }
-  }
-  ```
+- `session.json` スキーマは §5.7 の正準定義を参照。
 - screens のファイル名は screenshot event の `{seq:06}.png`。`Screenshot.path` と event seq を一致させ、
   `cause_seq` は発火源イベントとのリンクにのみ使う。
 
@@ -730,7 +798,10 @@ pub enum WriterMessage {
 ### 9.3 書き込みポリシー
 
 - **逐次書き**: 各 `EventEnvelope` を受け取ったら検証 → NDJSON 1 行追記 → flush。
-  - ただし `flush` はバッチ化: 50ms coalesce window または 256 イベント単位。
+  - 通常 event の `flush` はバッチ化: 50ms coalesce window または 256 イベント単位。
+- **即時 flush 対象**: `SessionStarted`, `SessionStopped`, `Warning`, `FlushBarrier` は
+  受信時に coalesce せず即時 fsync する。
+  理由: クラッシュ時に lifecycle / 警告は必ず保全したい。
 - **seq 検証**: 重複 seq は `Warning(SeqDuplicate)`、`t_mono_ms` の逆行は
   `Warning(TimestampRegression)` として記録する。writer は seq を振り直さない。
 - **MouseMove 絞り**: writer 入口で 50Hz (20ms) に絞る。
@@ -740,6 +811,7 @@ pub enum WriterMessage {
   bundle 側で `for_seq` を元に紐付ける。
   → writer は append 順と seq 順のズレを許容し、bundle 側が seq で正準化する。
 - **barrier**: `FlushBarrier` は pending write を flush してから ack を返す。
+  §7.2 の stop シーケンスにより、ack 時点で `SessionStopped` が append 済みであることが保証される。
 
 ### 9.4 耐障害性
 
@@ -861,8 +933,9 @@ pub fn generate_prompt_md(
 
 - bundle フォルダ: `<data_dir>/bundles/<yyyyMMdd_HHmmss>_<primary_app_slug>/`。
 - 画像配置、`events.ndjson` コピー、`prompt.md`、`manifest.json` 出力。
+- `manifest.json` のフィールド定義は §5.7.2 を参照（旧 `bundle_version` 名は廃止）。
 - DB `bundles` の status を `bundling` → `ready` に更新。
-- 失敗時は `status = failed` + `error_message` 記録。
+- 失敗時は `status = failed` + `error_message` 記録。失敗時でも `privacy_status` / `source_session_id` を含む manifest を可能な限り出力する。
 
 ### 10.7 BundleProgress の発行
 
@@ -1023,7 +1096,7 @@ windows = { version = "0.58", features = [
 | name | args | returns | 備考 |
 |---|---|---|---|
 | `start_recording` | — | `StartRecordingResult { session_id: String }` | 既存名維持 |
-| `stop_recording`  | — | `StopRecordingResult { session_id: String, stopping: true }` | |
+| `stop_recording`  | — | `StopRecordingResult { session_id: String }` | 成功は返り値、進行状態は `recording-state` event で通知 |
 | `get_recording_state` | — | `RecordingStatePayload` | 新設 |
 | `list_bundles` | `{ limit: u32, offset: u32 }` | `Vec<BundleSummary>` | |
 | `open_bundle` | `{ bundle_id: String }` | `()` | explorer.exe |

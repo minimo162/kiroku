@@ -17,14 +17,14 @@
 
 ### Cross-cutting acceptance criteria
 
-- [ ] すべての raw / bundle 生成物に schema version を持たせる。
+- [ ] 生成物ごとに `*_schema_version` を持たせる（design.md §5.7 参照）。session.json は `session_schema_version` + `events_schema_version`、manifest.json は `manifest_schema_version`。旧 `bundle_version` / `bundle_schema_version` は使わない。
 - [ ] EventKind ごとの drop policy を定義する。
-- [ ] lifecycle event / key / text / click は drop 不可、MouseMove / Wheel は drop/coalesce 可にする。
-- [ ] Stop sequence は gate input -> final capture -> drain UIA -> SessionStopped -> FlushBarrier -> close/join とする。
+- [ ] lifecycle event / key / text / MouseDown / MouseUp は drop 不可、MouseMove / Wheel は drop/coalesce 可にする。
+- [ ] Stop sequence は gate input -> final capture -> drain UIA -> SessionStopped -> FlushBarrier -> close/join とする（design.md §7.2）。
 - [ ] `SessionStopped` が FlushBarrier の対象に含まれるテストを追加する。
 - [ ] UIA/privacy 未確定時は TextInput の実文字列を永続化しない。
-- [ ] Phase 3 完了前の bundle は dev/internal only と明記する。
-- [ ] `manifest.json` に `privacy_status`, `schema_version`, `source_session_id`, `warning_counts`, `dropped_event_count`, `prompt_sha256` を含める。
+- [ ] Phase 3 完了前の bundle は dev/internal only と明記し、`manifest.json.privacy_status = "unredacted"` で出力する。
+- [ ] `manifest.json` は design.md §5.7.2 に従い、`manifest_schema_version`, `source_session_id`, `source_events_schema_version`, `source_event_count`, `event_count`, `dropped_event_count`, `warning_counts`, `privacy_status`, `prompt_path`, `prompt_sha256`, `notes` を含める。
 
 ---
 
@@ -84,8 +84,7 @@ Phase 1 は複数 PR に分割して進める。各 subsection の Exit criteria
 - [ ] `WarningCode` と `MaskReason` を定義する。
 - [ ] `RecordingSession::next_seq()` を実装し、producer 側で seq 採番する。
 - [ ] `WriterMessage::Event` と `WriterMessage::FlushBarrier` を定義する。
-- [ ] `session.json` に `schema_version`, `app_version`, `event_schema_version` を保存する。
-- [ ] 各 raw session metadata に event schema version を持たせる。
+- [ ] `session.json` に `session_schema_version`, `events_schema_version`, `app_version` を保存する（design.md §5.7.1）。
 - [ ] 未知の `EventKind` を bundle normalize で Warning として扱い、可能な範囲で継続する方針を定義する。
 
 #### 1A.3 Writer
@@ -124,13 +123,16 @@ Phase 1 は複数 PR に分割して進める。各 subsection の Exit criteria
 - [ ] `recording-state` event を emit する。
 - [ ] 互換用 `recording-status` は `Starting / Recording / Stopping` のみ `true` にする。
 - [ ] Mutex を保持したまま I/O しないよう state transition を分離する。
+- [ ] `max_recording_minutes` timeout を実装する: start 時に `RecordingController` が別 tokio task で `tokio::time::sleep_until(started_mono + max_duration)` を張り、発火時に `stop(MaxDurationReached)` を呼ぶ。
+- [ ] max duration timeout は stop 成功 / `Failed` 遷移 / app shutdown のいずれでもキャンセルされることを確認する。
+- [ ] max duration で stop した場合、`SessionStopped { reason: MaxDurationReached }` と `Warning(MaxDurationReached)` が events.ndjson に残るテストを追加する。
 
 #### 1B.2 RecordingSession lifecycle
 
 - [ ] `SessionId` を UUID newtype として実装する。
 - [ ] `SessionPaths` を実装する。
 - [ ] `recordings/<session_id>/events.ndjson` と `screens/` を作成する。
-- [ ] `session.json` に config snapshot / primary monitor / app version / schema version を保存する。
+- [ ] `session.json` に config snapshot / primary monitor / app version / `session_schema_version` / `events_schema_version` を保存する。
 - [ ] start 時に writer / sampler / focus task を起動する。
 - [ ] start 時に `SessionStarted` を writer に送る。
 - [ ] stop 時に state = `Stopping` へ遷移し、frontend / tray に emit する。
@@ -181,6 +183,9 @@ Phase 1 は複数 PR に分割して進める。各 subsection の Exit criteria
 
 目的: global input hook を bounded channel 経由で raw session に流す。
 
+前提: Phase 0 で `rdev` 同一プロセス方針か helper process fallback かを決定済み（`docs/phase0_report.md`）。
+以下の 1D.1 / 1D.2 は同一プロセス方針時のタスク。helper 採用時は 1D.3 を追加で実施する。
+
 #### 1D.1 Channel / drop policy
 
 - [ ] input channel を bounded にする。
@@ -207,12 +212,22 @@ Phase 1 は複数 PR に分割して進める。各 subsection の Exit criteria
 - [ ] `record_keystrokes=false` のとき key/text event が保存されないようにする。
 - [ ] password field でなくても Phase 1 では raw text を保存しない。
 
+#### 1D.3 helper process fallback（Phase 0 で採用決定時のみ）
+
+- [ ] `src-tauri/src/bin/kiroku_input_hook.rs` を新規作成する。
+- [ ] helper 側で `rdev::listen` を起動し、stdout に NDJSON 1 行 / event で書き出す最小実装を作る。
+- [ ] main プロセスから helper を `std::process::Command` で起動 / 監視し、stdout を line-delimited JSON として読む。
+- [ ] helper が死んだ場合の検知と restart / `Warning(EventDropped)` への集約を実装する。
+- [ ] main プロセス側の `InputListenerService` を、rdev 直呼び経路と helper 経路の両方に切り替え可能にする（コンパイル時 feature または起動時 config）。
+- [ ] helper 採用時の Phase 4 packaging と署名タスクと紐付ける。
+
 #### 1D Exit criteria
 
-- [ ] rdev event が bounded channel 経由で writer に入る。
+- [ ] rdev event が bounded channel 経由で writer に入る（同一プロセス方針 or helper 方針のいずれか）。
 - [ ] callback で lock / I/O / blocking がないことをコードレビューで確認する。
 - [ ] channel full で MouseMove だけが落ち、TextInput が保持される unit test が通る。
 - [ ] UIA/privacy 未確定時に TextInput の実文字列が JSON に出ない unit test が通る。
+- [ ] helper 採用時は helper プロセスが落ちても main がハングせず `Failed` に遷移できる。
 
 ### Phase 1E — DB / config / legacy cutover / UI
 
@@ -248,15 +263,17 @@ Phase 1 は複数 PR に分割して進める。各 subsection の Exit criteria
 - [ ] legacy scheduler / hourly summarizer / VLM batch loop が起動しない。
 - [ ] Dashboard が新 `RecordingStatePayload` を表示する。
 
-Exit criteria:
+### Phase 1 全体 Exit criteria
+
+1A〜1E を統合した到達条件:
 
 - [ ] Excel で start -> 入力 -> stop した raw session が残る。
-- [ ] `session.json` が保存される。
+- [ ] `session.json` が保存される（`session_schema_version` / `events_schema_version` 付き）。
 - [ ] `events.ndjson` に `SessionStarted`, input event, screenshot, `SessionStopped` が残る。
 - [ ] UIA/privacy 未実装状態では `TextInput.text` は常に `None` または `[MASKED]` になり、実文字列が `events.ndjson` に残らない。
 - [ ] `record_keystrokes=false` のとき key/text event が保存されない。
 - [ ] password field でなくても Phase 1 では raw text を保存しない。
-- [ ] Dashboard で Recording 状態と経過時間が見える。
+- [ ] `max_recording_minutes` で自動 Stop が発火し、`SessionStopped { MaxDurationReached }` が残る。
 - [ ] `bundles` に `recording -> bundling` の状態遷移が残る。
 
 ---
@@ -326,7 +343,7 @@ Exit criteria:
 - [ ] raw `events.ndjson` を bundle folder にコピーする。
 - [ ] `prompt.md` を出力する。
 - [ ] `manifest.json` を出力する。
-- [ ] `manifest.json` に `bundle_schema_version`, `source_session_id`, `source_event_count`, `warning_counts`, `dropped_event_count`, `frame_count`, `prompt_sha256`, `privacy_status` を保存する。
+- [ ] `manifest.json` に design.md §5.7.2 のフィールド（`manifest_schema_version`, `source_session_id`, `source_events_schema_version`, `source_event_count`, `event_count`, `dropped_event_count`, `warning_counts`, `frame_count`, `prompt_path`, `prompt_sha256`, `privacy_status`, `notes`）を保存する。
 - [ ] bundle 成功時に DB `status='ready'` を update する。
 - [ ] bundle 失敗時に DB `status='failed'` と `error_message` を update する。
 - [ ] `tauri-plugin-opener` で bundle folder を開く。
@@ -348,7 +365,7 @@ Exit criteria:
 - [ ] bundle folder が explorer で開く。
 - [ ] `prompt.md` が clipboard に入る。
 - [ ] annotated frame が最大 60 枚に収まる。
-- [ ] `manifest.json` に schema / source / warning / frame / prompt hash / privacy metadata が入る。
+- [ ] `manifest.json` が design.md §5.7.2 の全必須フィールド（manifest_schema_version / source_session_id / source_events_schema_version / event counts / warning_counts / privacy_status / prompt_sha256）を含む。
 
 ---
 
@@ -432,7 +449,7 @@ Release criteria:
 - [ ] `bundle/normalize.rs`: fixture events -> expected Step。
 - [ ] `bundle/normalize.rs`: `UiaContext.for_seq` で input / click / focus と UIA context を結合する。
 - [ ] `bundle/keyframe.rs`: frame cap が最大 60 に収まる。
-- [ ] `bundle/writer.rs`: manifest に event_count / frame_count / warning_counts / prompt_sha256 が入る。
+- [ ] `bundle/writer.rs`: manifest に design.md §5.7.2 の必須フィールド（manifest_schema_version / source_session_id / source_events_schema_version / event_count / source_event_count / frame_count / warning_counts / privacy_status / prompt_sha256）が入る。
 - [ ] `bundle/prompt.rs`: digest format と 200 行制限。
 - [ ] `config.rs`: legacy backup を作って migration する。
 - [ ] `db.rs`: bundles migration が idempotent。
