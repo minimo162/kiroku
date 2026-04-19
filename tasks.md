@@ -12,6 +12,19 @@
 - privacy / raw 保全 / 自動送信しない方針を優先し、迷った場合は `design.md` を先に更新する。
 - callback 内では blocking / I/O / lock を避ける。入力経路は bounded channel + `try_send` を基本にする。
 - `events.ndjson` の正準順は `seq`。append 順に依存した実装をしない。
+- Markdown は 1 チェック項目 1 行を維持し、Phase / subsection 単位で差分確認できるようにする。
+- 新規 Tauri command 追加時は `invoke_handler` と capabilities の更新を同じタスクに含める。
+
+### Cross-cutting acceptance criteria
+
+- [ ] すべての raw / bundle 生成物に schema version を持たせる。
+- [ ] EventKind ごとの drop policy を定義する。
+- [ ] lifecycle event / key / text / click は drop 不可、MouseMove / Wheel は drop/coalesce 可にする。
+- [ ] Stop sequence は gate input -> final capture -> drain UIA -> SessionStopped -> FlushBarrier -> close/join とする。
+- [ ] `SessionStopped` が FlushBarrier の対象に含まれるテストを追加する。
+- [ ] UIA/privacy 未確定時は TextInput の実文字列を永続化しない。
+- [ ] Phase 3 完了前の bundle は dev/internal only と明記する。
+- [ ] `manifest.json` に `privacy_status`, `schema_version`, `source_session_id`, `warning_counts`, `dropped_event_count`, `prompt_sha256` を含める。
 
 ---
 
@@ -42,7 +55,13 @@ Exit criteria:
 
 目的: start / stop で raw session (`session.json`, `events.ndjson`, `screens/`) が残る最小記録基盤を作る。
 
-### 1. 依存関係とモジュール雛形
+Phase 1 は複数 PR に分割して進める。各 subsection の Exit criteria を満たしてから次へ進む。
+
+### Phase 1A — Event schema / session skeleton / writer
+
+目的: pseudo event を投入して raw session の最小保存経路を成立させる。
+
+#### 1A.1 依存関係とモジュール雛形
 
 - [ ] `src-tauri/Cargo.toml` に Phase 1 で必要な依存を追加する。
 - [ ] `crossbeam-channel`, `arc-swap`, `bitflags`, `rdev` を追加する。
@@ -56,19 +75,45 @@ Exit criteria:
 - [ ] `recording/screen_sampler.rs` を追加する。
 - [ ] `recording/window_focus.rs` を追加する。
 
-### 2. Event / seq / channel policy
+#### 1A.2 Event / seq / schema version
 
 - [ ] `EventEnvelope { seq, t_mono_ms, wallclock, kind }` を実装する。
 - [ ] `EventKind` に `SessionStarted`, `SessionStopped`, input, screenshot, UIA, warning を定義する。
+- [ ] `EventKind::UiaContext { for_seq, ... }` を定義する。
 - [ ] `TextInput { text: Option<String>, masked, mask_reason }` を実装する。
 - [ ] `WarningCode` と `MaskReason` を定義する。
 - [ ] `RecordingSession::next_seq()` を実装し、producer 側で seq 採番する。
 - [ ] `WriterMessage::Event` と `WriterMessage::FlushBarrier` を定義する。
-- [ ] input channel を bounded にする。
-- [ ] channel full 時の drop policy を実装する。
-- [ ] `Warning(EventDropped)` を 1 秒単位で集約する。
+- [ ] `session.json` に `schema_version`, `app_version`, `event_schema_version` を保存する。
+- [ ] 各 raw session metadata に event schema version を持たせる。
+- [ ] 未知の `EventKind` を bundle normalize で Warning として扱い、可能な範囲で継続する方針を定義する。
 
-### 3. RecordingController / state machine
+#### 1A.3 Writer
+
+- [ ] dedicated thread または `spawn_blocking` で writer を動かす。
+- [ ] `crossbeam_channel::select!` で event / barrier / UIA response を受ける。
+- [ ] writer は input event を UIA 待ちで遅延させず、UIA response を `UiaContext { for_seq, ... }` として別 event で append する。
+- [ ] stale UIA response は `Warning(UiaStale)` として記録するか、破棄して metrics に残す。
+- [ ] `events.ndjson` に 1 行 1 event で append する。
+- [ ] flush を 50ms または 256 events で coalesce する。
+- [ ] `FlushBarrier` では pending write を flush して ack する。
+- [ ] seq 重複を `Warning(SeqDuplicate)` として記録する。
+- [ ] `t_mono_ms` 逆行を `Warning(TimestampRegression)` として記録する。
+- [ ] MouseMove を 50Hz に絞る。
+- [ ] write error を `WriterSummary.errors` に積み、可能な限り継続する。
+- [ ] 最後の不完全行を parse 側で捨てられる NDJSON 方針に合わせる。
+
+#### 1A Exit criteria
+
+- [ ] pseudo event を投入して `events.ndjson` が書ける。
+- [ ] `SessionStarted` / `SessionStopped` / `Warning` が JSON roundtrip できる。
+- [ ] `FlushBarrier` の unit test が通る。
+
+### Phase 1B — RecordingController / commands / state event
+
+目的: start / stop / state 取得と frontend への状態通知を成立させる。
+
+#### 1B.1 RecordingController / state machine
 
 - [ ] `RecordingState` 内部 enum を実装する。
 - [ ] `RecordingStatePayload` を実装する。
@@ -80,49 +125,40 @@ Exit criteria:
 - [ ] 互換用 `recording-status` は `Starting / Recording / Stopping` のみ `true` にする。
 - [ ] Mutex を保持したまま I/O しないよう state transition を分離する。
 
-### 4. RecordingSession lifecycle
+#### 1B.2 RecordingSession lifecycle
 
 - [ ] `SessionId` を UUID newtype として実装する。
 - [ ] `SessionPaths` を実装する。
 - [ ] `recordings/<session_id>/events.ndjson` と `screens/` を作成する。
-- [ ] `session.json` に config snapshot / primary monitor / app version を保存する。
+- [ ] `session.json` に config snapshot / primary monitor / app version / schema version を保存する。
 - [ ] start 時に writer / sampler / focus task を起動する。
 - [ ] start 時に `SessionStarted` を writer に送る。
-- [ ] stop 時に `recording_active=false` と `ArcSwapOption::store(None)` を先に行う。
+- [ ] stop 時に state = `Stopping` へ遷移し、frontend / tray に emit する。
+- [ ] stop 時に input producer から見える active flag を false にする。
+- [ ] stop 時に新規 input / trigger を遮断する。
+- [ ] stop 中も controller 内部では session handle を保持する。
 - [ ] stop 時に `CaptureRequest::Final { ack }` を送る。
+- [ ] stop 時に UIA response を短時間 drain する。
+- [ ] stop 時に `SessionStopped` を writer に送る。
 - [ ] stop 時に `FlushBarrier` ack を待つ。
-- [ ] stop 時に `SessionStopped` を送る。
-- [ ] capture / focus / uia request channel を close して task を join する。
-- [ ] UIA response を短時間 drain する。
+- [ ] stop 時に producer channel を close する。
+- [ ] sampler / focus / uia request task を join する。
 - [ ] writer を close / join して `WriterSummary` を返す。
+- [ ] DB を `bundling` へ遷移して bundle builder へ渡す。
+- [ ] producer 公開 handle の無効化と controller 内部 session 保持を分離する。
 
-### 5. InputListenerService
+#### 1B Exit criteria
 
-- [ ] `rdev::listen` をプロセス常駐で 1 本起動する。
-- [ ] callback は `recording_active=false` なら即 return する。
-- [ ] `ArcSwapOption<SessionChannels>` から現在 session を lock-free に読む。
-- [ ] modifier state を `AtomicU8` bitfield で保持する。
-- [ ] printable key から `PhysicalKeyDown` と `TextInput` を生成する。
-- [ ] control / navigation key は `PhysicalKeyDown` のみ生成する。
-- [ ] `PhysicalKeyUp`, `MouseDown`, `MouseUp`, `MouseMove`, `Wheel` を生成する。
-- [ ] MouseMove は callback 側で過剰に allocate しない。
-- [ ] IME best-effort warning を session 開始時に 1 回記録する。
-- [ ] UIA 未実装時は `TextInput` を強制 masked にする。
+- [ ] `start_recording` / `stop_recording` / `get_recording_state` が動く。
+- [ ] `recording-state` が frontend に届く。
+- [ ] 既存 `recording-status` 互換が残る。
+- [ ] `SessionStopped` が FlushBarrier の対象に含まれる unit/integration test が通る。
 
-### 6. Writer
+### Phase 1C — ScreenSampler / raw session
 
-- [ ] dedicated thread または `spawn_blocking` で writer を動かす。
-- [ ] `crossbeam_channel::select!` で event / barrier / UIA response を受ける。
-- [ ] `events.ndjson` に 1 行 1 event で append する。
-- [ ] flush を 50ms または 256 events で coalesce する。
-- [ ] `FlushBarrier` では pending write を flush して ack する。
-- [ ] seq 重複を `Warning(SeqDuplicate)` として記録する。
-- [ ] `t_mono_ms` 逆行を `Warning(TimestampRegression)` として記録する。
-- [ ] MouseMove を 50Hz に絞る。
-- [ ] write error を `WriterSummary.errors` に積み、可能な限り継続する。
-- [ ] 最後の不完全行を parse 側で捨てられる NDJSON 方針に合わせる。
+目的: heartbeat / trigger / final capture を raw session に保存する。
 
-### 7. ScreenSampler / WindowFocus
+#### 1C.1 ScreenSampler / WindowFocus
 
 - [ ] `CaptureRequest::{Heartbeat, Triggered, Final}` を実装する。
 - [ ] sampler は dedicated thread または `spawn_blocking` で動かす。
@@ -135,7 +171,54 @@ Exit criteria:
 - [ ] `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` で FocusChange を発火する。
 - [ ] 500ms polling fallback を実装する。
 
-### 8. DB / config / legacy 起動経路
+#### 1C Exit criteria
+
+- [ ] heartbeat screenshot が `screens/` に残る。
+- [ ] screenshot event seq と filename が一致する。
+- [ ] final capture が debounce されずに保存される。
+
+### Phase 1D — InputListener / channel policy
+
+目的: global input hook を bounded channel 経由で raw session に流す。
+
+#### 1D.1 Channel / drop policy
+
+- [ ] input channel を bounded にする。
+- [ ] EventKind ごとの drop 可否を定義する。
+- [ ] Never drop: `SessionStarted`, `SessionStopped`, `TextInput`, `PhysicalKeyDown`, `PhysicalKeyUp`, `MouseDown`, `MouseUp`, `Warning`。
+- [ ] Coalesce/drop: `MouseMove`, `Wheel`。
+- [ ] trigger capture request は debounce/coalesce 可能にする。
+- [ ] channel full で non-droppable event が送れない場合は recording を `Failed` に遷移する。
+- [ ] `Warning(EventDropped)` を 1 秒単位で集約する。
+
+#### 1D.2 InputListenerService
+
+- [ ] `rdev::listen` をプロセス常駐で 1 本起動する。
+- [ ] callback は `recording_active=false` なら即 return する。
+- [ ] `ArcSwapOption<SessionChannels>` から現在 session を lock-free に読む。
+- [ ] modifier state を `AtomicU8` bitfield で保持する。
+- [ ] printable key から `PhysicalKeyDown` と `TextInput` を生成する。
+- [ ] control / navigation key は `PhysicalKeyDown` のみ生成する。
+- [ ] `PhysicalKeyUp`, `MouseDown`, `MouseUp`, `MouseMove`, `Wheel` を生成する。
+- [ ] MouseMove は callback 側で過剰に allocate しない。
+- [ ] IME best-effort warning を session 開始時に 1 回記録する。
+- [ ] UIA 未実装時は `TextInput` を強制 masked にする。
+- [ ] UIA/privacy 未実装状態では `TextInput.text` は常に `None` または `[MASKED]` にし、実文字列を `events.ndjson` に残さない。
+- [ ] `record_keystrokes=false` のとき key/text event が保存されないようにする。
+- [ ] password field でなくても Phase 1 では raw text を保存しない。
+
+#### 1D Exit criteria
+
+- [ ] rdev event が bounded channel 経由で writer に入る。
+- [ ] callback で lock / I/O / blocking がないことをコードレビューで確認する。
+- [ ] channel full で MouseMove だけが落ち、TextInput が保持される unit test が通る。
+- [ ] UIA/privacy 未確定時に TextInput の実文字列が JSON に出ない unit test が通る。
+
+### Phase 1E — DB / config / legacy cutover / UI
+
+目的: 新 recording lifecycle を既存アプリ起動経路と UI に接続し、旧自動処理を止める。
+
+#### 1E.1 DB / config / legacy 起動経路
 
 - [ ] `bundles` table migration を追加する。
 - [ ] 起動時に `recording` / `bundling` row を `failed` に戻す。
@@ -146,9 +229,11 @@ Exit criteria:
 - [ ] `record_keystrokes=false` の意味を backend に実装する。
 - [ ] `record_uia_context=false` の場合、TextInput を強制 masked にする。
 - [ ] scheduler / hourly summarizer / VLM batch loop の起動経路を外す。
+- [ ] `spawn_scheduler`, `spawn_hourly_summarizer`, `spawn_copilot_auto_connect` が setup 時に起動しないことを確認する。
+- [ ] VLM batch / VLM server / Copilot server 系 command の invoke handler 登録を v1 方針に合わせて整理する。
 - [ ] legacy tables への新規 write が発生しないことを確認する。
 
-### 9. Phase 1 UI
+#### 1E.2 Phase 1 UI
 
 - [ ] `src/lib/types/recording.ts` を追加する。
 - [ ] Dashboard を `RecordingStatePayload` ベースにする。
@@ -157,11 +242,20 @@ Exit criteria:
 - [ ] 経過時間 / event count / screenshot count を表示する。
 - [ ] Stop / max duration 到達時の表示を実装する。
 
+#### 1E Exit criteria
+
+- [ ] `bundles` table migration が通る。
+- [ ] legacy scheduler / hourly summarizer / VLM batch loop が起動しない。
+- [ ] Dashboard が新 `RecordingStatePayload` を表示する。
+
 Exit criteria:
 
 - [ ] Excel で start -> 入力 -> stop した raw session が残る。
 - [ ] `session.json` が保存される。
 - [ ] `events.ndjson` に `SessionStarted`, input event, screenshot, `SessionStopped` が残る。
+- [ ] UIA/privacy 未実装状態では `TextInput.text` は常に `None` または `[MASKED]` になり、実文字列が `events.ndjson` に残らない。
+- [ ] `record_keystrokes=false` のとき key/text event が保存されない。
+- [ ] password field でなくても Phase 1 では raw text を保存しない。
 - [ ] Dashboard で Recording 状態と経過時間が見える。
 - [ ] `bundles` に `recording -> bundling` の状態遷移が残る。
 
@@ -170,6 +264,12 @@ Exit criteria:
 ## Phase 2 — Bundle 最小版
 
 目的: raw session から Copilot へ渡す folder / prompt / annotated frames を生成する。
+
+注意:
+
+- [ ] Phase 3 privacy 完了前の bundle は dev/internal only とし、配布・実業務利用しない。
+- [ ] Phase 3 未完了時は UI 上に redaction 未完成 warning を出す。
+- [ ] bundle manifest に `privacy_status: "unredacted" | "redacted"` を記録する。
 
 ### 1. bundle modules
 
@@ -188,8 +288,11 @@ Exit criteria:
 - [ ] 連続 `TextInput` を `TextRun` に畳む。
 - [ ] `Enter / Tab / Escape / Alt+Tab / FocusChange / MouseUp` で TextRun を区切る。
 - [ ] MouseMove を digest から除外し、annotate 用 trail にだけ残す。
+- [ ] `for_seq` により input / click / focus と `UiaContext` を結合する。
 - [ ] `MouseDown/MouseUp + UiaContext + 直後 Screenshot` を Step に束ねる。
 - [ ] `Warning(OffPrimaryMonitor)` 区間を Step に反映する。
+- [ ] 未知の `EventKind` は Warning として扱い、可能な範囲で継続する。
+- [ ] 不完全行や未知 event を処理した件数を manifest の warning counts に反映する。
 
 ### 3. keyframe
 
@@ -223,6 +326,7 @@ Exit criteria:
 - [ ] raw `events.ndjson` を bundle folder にコピーする。
 - [ ] `prompt.md` を出力する。
 - [ ] `manifest.json` を出力する。
+- [ ] `manifest.json` に `bundle_schema_version`, `source_session_id`, `source_event_count`, `warning_counts`, `dropped_event_count`, `frame_count`, `prompt_sha256`, `privacy_status` を保存する。
 - [ ] bundle 成功時に DB `status='ready'` を update する。
 - [ ] bundle 失敗時に DB `status='failed'` と `error_message` を update する。
 - [ ] `tauri-plugin-opener` で bundle folder を開く。
@@ -244,6 +348,7 @@ Exit criteria:
 - [ ] bundle folder が explorer で開く。
 - [ ] `prompt.md` が clipboard に入る。
 - [ ] annotated frame が最大 60 枚に収まる。
+- [ ] `manifest.json` に schema / source / warning / frame / prompt hash / privacy metadata が入る。
 
 ---
 
@@ -257,6 +362,7 @@ Exit criteria:
 - [ ] `UiaRequest { for_seq, trigger, cursor, deadline_mono_ms }` を処理する。
 - [ ] `UiaResponse { for_seq, payload, elapsed_ms, completed_mono_ms }` を返す。
 - [ ] 150ms deadline を超えた response を stale として破棄する。
+- [ ] stale UIA response は digest に混入させない。
 - [ ] worker が N 秒以上戻らない場合の restart 方針を実装する。
 - [ ] request queue を bounded にし、古い request を drop する。
 - [ ] `FocusChange / MouseUp / Enter / Tab` で UIA request を発行する。
@@ -265,6 +371,7 @@ Exit criteria:
 - [ ] `is_password=false` が deadline 内で確定した場合だけ `ConfirmedPlain` に戻す。
 - [ ] timeout / unknown / password は masked にする。
 - [ ] pending text は raw 永続化せず、plain 確定時だけ writer に送る。
+- [ ] UIA が deadline 内に `ConfirmedPlain` を返した場合だけ plain text 保存を許可する。
 - [ ] `password_rect` に基づく screenshot redaction を実装する。
 - [ ] password rect 不明時の warning を実装する。
 - [ ] primary monitor 外検知 warning を実装する。
@@ -313,14 +420,23 @@ Release criteria:
 
 - [ ] `recording/event.rs`: Event / EventKind JSON roundtrip。
 - [ ] `recording/session.rs`: seq が単調増加する。
+- [ ] `recording/session.rs`: stop lifecycle で `SessionStopped` が `FlushBarrier` 前に送られ、`events.ndjson` に残る。
 - [ ] `recording/writer.rs`: duplicate seq warning。
 - [ ] `recording/writer.rs`: timestamp regression warning。
 - [ ] `recording/writer.rs`: FlushBarrier が flush 後に ack する。
+- [ ] `recording/input_listener.rs`: MouseMove は drop/coalesce されるが TextInput / MouseUp は落ちない。
+- [ ] `recording/input_listener.rs`: UIA 未確定時、TextInput の実文字列が JSON に出ない。
+- [ ] `recording/writer.rs`: 途中で不完全行がある NDJSON を normalize が復旧できる。
+- [ ] `recording/uia_worker.rs`: deadline 超過 response が digest に混入しない。
+- [ ] `recording/screen_sampler.rs`: screenshot event seq と `screens/{seq:06}.png` が一致する。
 - [ ] `bundle/normalize.rs`: fixture events -> expected Step。
+- [ ] `bundle/normalize.rs`: `UiaContext.for_seq` で input / click / focus と UIA context を結合する。
 - [ ] `bundle/keyframe.rs`: frame cap が最大 60 に収まる。
+- [ ] `bundle/writer.rs`: manifest に event_count / frame_count / warning_counts / prompt_sha256 が入る。
 - [ ] `bundle/prompt.rs`: digest format と 200 行制限。
 - [ ] `config.rs`: legacy backup を作って migration する。
 - [ ] `db.rs`: bundles migration が idempotent。
+- [ ] legacy cutover: start/stop 後に旧 captures/sessions へ新規 write されない。
 
 ### Integration / manual tests
 
